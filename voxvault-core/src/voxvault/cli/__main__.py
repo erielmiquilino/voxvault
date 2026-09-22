@@ -183,6 +183,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.set_defaults(handler=_cmd_serve)
 
+    detect = sub.add_parser(
+        "detect",
+        help="Mostra quem esta usando o microfone e se parece uma reuniao.",
+    )
+    detect.add_argument(
+        "--watch", type=float, default=0.0, metavar="SEGUNDOS",
+        help="Observa por N segundos, relatando quando a deteccao se sustenta.",
+    )
+    detect.add_argument("--json", action="store_true")
+    detect.set_defaults(handler=_cmd_detect)
+
     mcp_cmd = sub.add_parser(
         "mcp", help="Verifica e registra o servidor MCP nos clientes de agente."
     )
@@ -1000,6 +1011,81 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         sys.stdout.write("\nEncerrando o servico.\n")
         service.shutdown()
         return 0
+
+
+def _cmd_detect(args: argparse.Namespace) -> int:
+    import json  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from ..detect import (  # noqa: PLC0415
+        SUSTAIN_APP_S,
+        SUSTAIN_BROWSER_S,
+        MeetingDetector,
+        active_users,
+        candidates,
+    )
+
+    detector = MeetingDetector()
+    available, reason = detector.available()
+    if not available:
+        sys.stderr.write(f"{reason}\n")
+        return 1
+
+    def snapshot() -> dict:
+        return {
+            "segurando_o_microfone": [u.describe for u in active_users()],
+            "candidatos": [
+                {"aplicativo": c.name, "sinal": str(c.signal),
+                 "periodo_s": c.sustain_s}
+                for c in candidates()
+            ],
+        }
+
+    if not args.watch:
+        estado = snapshot()
+        if args.json:
+            sys.stdout.write(json.dumps(estado, ensure_ascii=False, indent=2))
+            sys.stdout.write("\n")
+            return 0
+        if not estado["segurando_o_microfone"]:
+            sys.stdout.write("Ninguem esta usando o microfone agora.\n")
+            return 0
+        sys.stdout.write("Usando o microfone:\n")
+        for nome in estado["segurando_o_microfone"]:
+            sys.stdout.write(f"  {nome}\n")
+        if estado["candidatos"]:
+            sys.stdout.write("\nReconhecidos como possivel reuniao:\n")
+            for c in estado["candidatos"]:
+                sys.stdout.write(
+                    f"  {c['aplicativo']}  ({c['sinal']}, precisa de "
+                    f"{c['periodo_s']:.0f}s sustentados)\n"
+                )
+        else:
+            sys.stdout.write("\nNenhum deles e um aplicativo de reuniao conhecido.\n")
+        return 0
+
+    sys.stdout.write(
+        f"Observando por {args.watch:.0f}s. Aplicativo reconhecido precisa de "
+        f"{SUSTAIN_APP_S:.0f}s sustentados; navegador, {SUSTAIN_BROWSER_S:.0f}s.\n"
+        f"Nada do conteudo e lido: apenas qual processo detem o microfone.\n\n"
+    )
+    deadline = time.monotonic() + args.watch
+    anterior = None
+    while time.monotonic() < deadline:
+        deteccao = detector.observe()
+        atual = deteccao.name if deteccao else None
+        if atual != anterior:
+            if deteccao is not None:
+                sys.stdout.write(
+                    f"  reuniao detectada: {deteccao.name} "
+                    f"({'sinal fraco' if deteccao.weak else 'aplicativo reconhecido'})\n"
+                )
+            else:
+                sys.stdout.write("  a reuniao terminou\n")
+            anterior = atual
+        time.sleep(2.0)
+    sys.stdout.write("\nFim da observacao.\n")
+    return 0
 
 
 def _stop_service(*, force: bool) -> int:

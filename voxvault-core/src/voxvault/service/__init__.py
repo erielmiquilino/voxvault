@@ -102,6 +102,7 @@ class ResidentService:
         self._events: list[tuple[str, str, float]] = []
         self._power = None
         self._suspended_session = ""
+        self._detector = None
 
     # -- lifecycle -----------------------------------------------------
 
@@ -379,6 +380,42 @@ class ResidentService:
             self._claim.release()
             self._claim = None
 
+    # -- meeting detection ---------------------------------------------
+
+    @property
+    def detector(self):
+        if self._detector is None:
+            from ..detect import MeetingDetector  # noqa: PLC0415
+
+            self._detector = MeetingDetector()
+        return self._detector
+
+    def detection(self) -> dict:
+        """Whether a meeting looks like it started, and on what evidence.
+
+        Sampled on the caller's rhythm rather than on a timer of its own: the
+        sustained period is measured in wall clock, so polling more or less
+        often changes nothing about when a detection becomes valid.
+        """
+        from ..detect import candidates  # noqa: PLC0415
+
+        available, reason = self.detector.available()
+        if not available:
+            return {"disponivel": False, "motivo": reason, "deteccao": None}
+
+        detection = self.detector.observe()
+        with self._lock:
+            gravando = self._session is not None
+        return {
+            "disponivel": True,
+            "gravando": gravando,
+            "deteccao": detection.as_dict() if detection else None,
+            "candidatos": [
+                {"aplicativo": c.name, "sinal": str(c.signal)}
+                for c in candidates()
+            ],
+        }
+
     # -- recording -----------------------------------------------------
 
     def health(self) -> dict:
@@ -629,6 +666,7 @@ def _make_handler(service: ResidentService):
 _ROUTES = {
     ("GET", "/saude"): lambda svc, body: svc.health(),
     ("GET", "/gravacao"): lambda svc, body: svc.recording(),
+    ("GET", "/deteccao"): lambda svc, body: svc.detection(),
     ("POST", "/gravacao/iniciar"): lambda svc, body: svc.start_recording(
         title=str(body.get("titulo") or body.get("title") or "")
     ),
