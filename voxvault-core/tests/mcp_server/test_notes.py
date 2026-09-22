@@ -186,3 +186,24 @@ def test_notes_never_touch_the_transcript(server, store, make_meeting) -> None:
     call(server, "remover_nota", nota=created["id"])
 
     assert [(e.start_ms, e.text) for e in store.timeline("r1")] == before
+
+
+def test_a_note_written_through_mcp_reaches_the_export(server, store, make_meeting) -> None:
+    """Export files track the revision, so a note-only change is invisible to
+    the staleness signal. Every note write has to rebuild them, or what is on
+    disk drifts from what the database holds without anything noticing."""
+    from voxvault.store import export_paths
+
+    meeting = make_meeting("r1")
+    readable, _structured = export_paths(meeting)
+
+    created = _note(server, "r1", tipo="resumo", conteudo="Decidimos adiar o deploy.")
+    assert readable.is_file()
+    assert "adiar o deploy" in readable.read_text(encoding="utf-8")
+
+    call(server, "atualizar_nota", nota=created["id"], conteudo="Decidimos seguir.")
+    assert "Decidimos seguir" in readable.read_text(encoding="utf-8")
+    assert "adiar o deploy" not in readable.read_text(encoding="utf-8")
+
+    call(server, "remover_nota", nota=created["id"])
+    assert "Decidimos seguir" not in readable.read_text(encoding="utf-8")

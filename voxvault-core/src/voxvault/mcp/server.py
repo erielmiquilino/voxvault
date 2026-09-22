@@ -550,6 +550,7 @@ def _register_notes(server) -> None:
             # not enough to judge a summary by months later.
             author=NoteAuthor.agent(SESSION.client),
         )
+        _refresh_exports(meeting.uid)
         return _note_payload(note)
 
     @server.tool(
@@ -564,7 +565,9 @@ def _register_notes(server) -> None:
         nota: Annotated[str, Field(description="Identificador da nota")],
         conteudo: Annotated[str, Field(description="Novo texto")],
     ) -> dict:
-        return _note_payload(_notes_api().update_note(nota, content=conteudo))
+        updated = _notes_api().update_note(nota, content=conteudo)
+        _refresh_exports(updated.meeting_uid)
+        return _note_payload(updated)
 
     @server.tool(
         name="remover_nota",
@@ -574,8 +577,35 @@ def _register_notes(server) -> None:
     def remover_nota(
         nota: Annotated[str, Field(description="Identificador da nota")],
     ) -> dict:
-        _notes_api().delete_note(nota)
+        store = _notes_api()
+        existing = store.get_note(nota)
+        store.delete_note(nota)
+        if existing is not None:
+            _refresh_exports(existing.meeting_uid)
         return {"id": nota, "removida": True}
+
+
+def _refresh_exports(meeting_uid: str) -> None:
+    """Rebuild a meeting's export files after its notes changed.
+
+    The staleness signal on disk tracks the *revision*, so a note-only change
+    is invisible to it and the reconciliation at startup would never notice.
+    Until that signal becomes note-aware -- a real gap in the specification,
+    not something to paper over silently -- every note write regenerates here.
+
+    Derived files never fail the operation that produced them: the note is
+    already stored, and an export that could not be rewritten is a smaller
+    problem than losing the write.
+    """
+    try:
+        from ..store import regenerate_exports  # noqa: PLC0415
+
+        store = SESSION.store
+        meeting = store.get_meeting(meeting_uid)
+        if meeting is not None and meeting.active_revision_id is not None:
+            regenerate_exports(store, meeting_uid)
+    except Exception:
+        pass
 
 
 def _notes_api():
