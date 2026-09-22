@@ -16,10 +16,15 @@ class Track(enum.StrEnum):
 
     Speaker attribution in VoxVault is physical, not inferred: MIC is the
     person using the machine, SYSTEM is the whole mix the endpoint played.
+
+    IMPORTED is neither. A file dropped in has no captured track, and forcing
+    it into one of the other two would make the speaker mapping below state an
+    attribution the audio does not support.
     """
 
     MIC = "mic"
     SYSTEM = "system"
+    IMPORTED = "importada"
 
 
 class Speaker(enum.StrEnum):
@@ -38,6 +43,7 @@ class Speaker(enum.StrEnum):
 TRACK_TO_SPEAKER: dict[Track, Speaker] = {
     Track.MIC: Speaker.ME,
     Track.SYSTEM: Speaker.OTHERS,
+    Track.IMPORTED: Speaker.UNKNOWN,
 }
 
 
@@ -125,7 +131,13 @@ class TranscriptionResult:
 
 @dataclass(frozen=True, slots=True)
 class TimelineEntry:
-    """A segment placed on the merged, two-track meeting timeline."""
+    """A segment placed on the merged, two-track meeting timeline.
+
+    ``overlaps`` marks a stretch where both tracks carry speech at the same
+    instant -- people talking over each other, or the microphone re-capturing
+    the speakers. A reader needs to see that, because the two lines are
+    simultaneous rather than consecutive.
+    """
 
     start_ms: int
     end_ms: int
@@ -133,6 +145,7 @@ class TimelineEntry:
     track: Track
     speaker: Speaker
     segment_id: int
+    overlaps: bool = False
 
 
 @dataclass(slots=True)
