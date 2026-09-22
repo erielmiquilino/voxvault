@@ -100,6 +100,8 @@ _HRESULT_TEXT: Final[dict[int, str]] = {
     AUDCLNT_E_BUFFER_TOO_LARGE: "o buffer pedido e maior do que o dispositivo aceita",
     0x80070005: "acesso negado ao dispositivo (verifique a privacidade do microfone)",
     0x80004005: "falha nao especificada do subsistema de audio",
+    0x80040154: "classe COM nao registrada; o endpoint existe mas nao esta utilizavel",
+    0x80070490: "elemento nao encontrado",
 }
 
 # --------------------------------------------------------------------------

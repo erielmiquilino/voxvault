@@ -460,14 +460,23 @@ def test_the_search_index_only_ever_points_at_active_revisions(
     assert store.unindexed_active_segments() == []
 
 
+@pytest.mark.parametrize(
+    "label", ["after_index_delete", "after_index_insert", "after_activation"]
+)
 def test_a_failure_while_publishing_rolls_the_index_back_with_it(
-    store: TranscriptStore, tmp_path: Path, engine: EngineInfo, other_engine: EngineInfo
+    store: TranscriptStore,
+    tmp_path: Path,
+    engine: EngineInfo,
+    other_engine: EngineInfo,
+    label: str,
 ) -> None:
     """Task 1.6.5: index and activation are the same transaction.
 
-    The fault is injected after the index has already been rewritten inside
-    the transaction. If the index were updated outside it, the rollback would
-    leave the search pointing at a revision that is not active.
+    The fault is injected at every point the publication exposes, including
+    the one right after the meeting has been pointed at the new revision. A
+    fault there is what separates the two designs: if the index were rewritten
+    in a transaction of its own, the activation would already be committed and
+    the search would be left describing a revision that is not the active one.
     """
     make_meeting(store, tmp_path)
     transcribe(
@@ -484,8 +493,8 @@ def test_a_failure_while_publishing_rolls_the_index_back_with_it(
     store.add_segments(doomed.id, Track.MIC, [Segment(0, 1000, "texto novo mamute")])
     store.add_segments(doomed.id, Track.SYSTEM, [Segment(0, 1000, "eco novo")])
 
-    def explode(label: str) -> None:
-        if label == "after_index_insert":
+    def explode(reached: str) -> None:
+        if reached == label:
             raise RuntimeError("queda simulada no meio da publicacao")
 
     store.fault_hook = explode
@@ -493,11 +502,71 @@ def test_a_failure_while_publishing_rolls_the_index_back_with_it(
         store.publish_revision(doomed.id, tracks_ok=[Track.MIC, Track.SYSTEM])
     store.fault_hook = None
 
+    assert store.orphan_index_rows() == [], "o indice aponta para revisao nao ativa"
+    assert store.unindexed_active_segments() == [], "a revisao ativa saiu do indice"
     assert [h.segment_id for h in store.search("dinossauro")] == before
     assert store.search("mamute") == []
+    assert store.revision(doomed.id).status is RevisionStatus.BUILDING
+    assert store.active_revision("reuniao-1").engine_id == engine.identifier()
+
+
+def test_publication_is_refused_if_the_active_revision_moved_underneath_it(
+    store: TranscriptStore, tmp_path: Path, engine: EngineInfo, other_engine: EngineInfo
+) -> None:
+    """Defence in depth for two processes publishing the same meeting.
+
+    The completeness comparison is made before the write lock is taken. The
+    activation is therefore guarded on the revision it was decided against.
+    The hook here stands in for the other process, changing the active
+    revision from inside the transaction so the guard has something to catch.
+    """
+    make_meeting(store, tmp_path)
+    first, _ = transcribe(
+        store,
+        "reuniao-1",
+        engine,
+        mic=[Segment(0, 1000, "micro original")],
+        system=[Segment(0, 1000, "sistema original")],
+    )
+    second = store.begin_revision("reuniao-1", engine=other_engine)
+    store.add_segments(second.id, Track.MIC, [Segment(0, 1000, "micro novo")])
+    store.add_segments(second.id, Track.SYSTEM, [Segment(0, 1000, "sistema novo")])
+
+    def move_the_target(label: str) -> None:
+        if label == "after_index_delete":
+            store._conn.execute(
+                "UPDATE meetings SET active_revision_id = NULL WHERE uid = 'reuniao-1'"
+            )
+
+    store.fault_hook = move_the_target
+    with pytest.raises(StorageError, match="mudou durante a"):
+        store.publish_revision(second.id, tracks_ok=[Track.MIC, Track.SYSTEM])
+    store.fault_hook = None
+
+    assert store.active_revision("reuniao-1").uid == first.uid
     assert store.orphan_index_rows() == []
     assert store.unindexed_active_segments() == []
-    assert store.revision(doomed.id).status is RevisionStatus.BUILDING
+
+
+def test_segments_are_refused_by_a_revision_that_is_no_longer_building(
+    store: TranscriptStore, tmp_path: Path, engine: EngineInfo
+) -> None:
+    """A published transcript is immutable.
+
+    The same check runs a second time inside the write lock, which is what
+    covers another process publishing between this caller's check and its
+    write. That window is also closed upstream, by the pipeline refusing a
+    second attempt for a meeting that already has one.
+    """
+    make_meeting(store, tmp_path)
+    revision = store.begin_revision("reuniao-1", engine=engine)
+    store.add_segments(revision.id, Track.MIC, [Segment(0, 1000, "micro")])
+    store.publish_revision(
+        revision.id, tracks_ok=[Track.MIC], tracks_failed=[Track.SYSTEM]
+    )
+    with pytest.raises(StorageError, match="nao aceita mais segmentos"):
+        store.add_segments(revision.id, Track.SYSTEM, [Segment(0, 1000, "tarde demais")])
+    assert len(store.timeline("reuniao-1")) == 1
 
 
 def test_completeness_of_an_imported_meeting_needs_only_its_own_track(

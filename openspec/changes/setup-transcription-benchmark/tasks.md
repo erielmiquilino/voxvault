@@ -1,6 +1,6 @@
 ## 1. Ambiente e esqueleto do projeto
 
-- [ ] 1.1 Criar o pacote `voxvault-core` com `pyproject.toml` fixando `requires-python = ">=3.12,<3.13"`, e verificar que `uv sync` cria a venv em 3.12.12 e que `uv run python -V` imprime uma versão 3.12 — o teto é desta fase e será reconfirmado ou revisado no portão de captura da Fase 1
+- [ ] 1.1 Criar o pacote `voxvault-core` com `pyproject.toml` fixando `requires-python = ">=3.12"` — piso vindo do `numpy`, sem teto, porque o `soxr` publica wheel de ABI estável (`cp312-abi3`) e a captura não tem extensão compilada —, e verificar que `uv sync` cria a venv em 3.12.12
 - [ ] 1.2 Instalar ffmpeg na máquina e verificar que `ffmpeg -version` responde a partir do `PATH`
 - [ ] 1.3 Declarar as dependências de runtime (`faster-whisper`, `ctranslate2`, `soxr`, `numpy`, `typer`, `rich`) e as de GPU (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), e verificar que `uv sync` resolve sem conflito
 - [ ] 1.4 Configurar `pytest` e `ruff`, e verificar que `uv run pytest` e `uv run ruff check` rodam num repositório sem testes ainda, terminando com sucesso

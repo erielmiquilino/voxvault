@@ -3,9 +3,12 @@ name = "voxvault-core"
 version = "0.1.0"
 description = "Grava, transcreve e indexa reunioes localmente no Windows, sem depender da plataforma de reuniao."
 readme = "README.md"
-# Teto definido pela intersecao de wheels Windows: soxr pula 3.13, numpy exige >=3.12.
-# Reconfirmado ou revisado no portao de captura da Fase 1 (tarefa 2.0.4).
-requires-python = ">=3.12,<3.13"
+# Piso vindo do numpy, que exige 3.12. Nao ha teto: o soxr publica wheel de
+# ABI estavel (cp312-abi3), que instala de 3.12 para cima; ctranslate2 cobre
+# ate 3.14; faster-whisper e soundfile sao Python puro; e a captura e ctypes
+# sobre a API do sistema, sem extensao compilada e portanto sem ABI propria.
+# Verificado no portao de captura da Fase 1 (tarefa 2.0.4).
+requires-python = ">=3.12"
 
 dependencies = [
     "numpy>=2.0",

@@ -193,6 +193,16 @@ class TranscriptStore:
                 state=str(state),
             )
 
+    def record_progress(self, uid: str, duration_ms: int) -> None:
+        """Persist how much audio a running session has captured so far.
+
+        Small and frequent, and the reason :class:`AsyncWriter` exists: this is
+        the write a recording makes while it records, and it must never be on
+        the path that would make it wait.
+        """
+        with self._write():
+            self._update_meeting(uid, duration_ms=duration_ms)
+
     def set_exports_revision(self, uid: str, revision_uid: str) -> None:
         """Record which revision the files on disk were generated from.
 
@@ -349,6 +359,17 @@ class TranscriptStore:
         if not rows:
             return 0
         with self._write():
+            # Re-check inside the lock. Another process may have published
+            # this revision since the check above, and segments appended to a
+            # published revision would change a transcript after the fact.
+            status = self._conn.execute(
+                "SELECT status FROM revisions WHERE id = ?", (revision_id,)
+            ).fetchone()
+            if status is None or status[0] != RevisionStatus.BUILDING.value:
+                raise StorageError(
+                    f"A revisao {revision.uid} deixou de estar em construcao "
+                    f"enquanto os segmentos eram gravados. Nada foi gravado."
+                )
             self._conn.executemany(
                 "INSERT INTO segments("
                 " revision_id, meeting_id, track, speaker, start_ms, end_ms, text)"
@@ -477,10 +498,14 @@ class TranscriptStore:
                     revision.id,
                 ),
             )
-            self._conn.execute(
+            # Guarded on the revision this decision was made against. If
+            # another process activated something else in the meantime, the
+            # completeness comparison above was made on stale facts and this
+            # publication must not go through on them.
+            changed = self._conn.execute(
                 "UPDATE meetings SET active_revision_id = ?, transcript_state = ?,"
                 " attempt_state = 'nenhuma', attempt_error = '', updated_at_ms = ?"
-                " WHERE id = ?",
+                " WHERE id = ? AND active_revision_id IS ?",
                 (
                     revision.id,
                     (
@@ -490,8 +515,15 @@ class TranscriptStore:
                     ),
                     moment,
                     revision.meeting_id,
+                    active.id if active else None,
                 ),
-            )
+            ).rowcount
+            if changed == 0:
+                raise StorageError(
+                    f"A revisao ativa da reuniao '{meeting_uid}' mudou durante a "
+                    f"publicacao da revisao {revision.uid}. Nada foi publicado; "
+                    f"repita a tentativa."
+                )
             self._fault("after_activation")
 
         message = (
@@ -596,6 +628,10 @@ class TranscriptStore:
         A generator over an ordered index scan: a four-hour meeting is read a
         row at a time, and ``after``/``limit`` give keyset pagination on the
         same total order the index provides.
+
+        Exhaust it, or bound it with ``limit``. An abandoned generator leaves a
+        read transaction open, and an open read transaction keeps the
+        write-ahead log from being checkpointed.
         """
         if revision_id is None:
             row = self._conn.execute(

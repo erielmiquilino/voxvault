@@ -2,7 +2,7 @@
 
 Ver `proposal.md — Why` para a motivação. A fase anterior deixou prontos o contrato `TranscriptionEngine`, a normalização de áudio via ffmpeg e o diagnóstico de ambiente; esta fase os consome sem alterá-los.
 
-Três restrições herdadas moldam o que segue: a captura de áudio do sistema depende de uma interface exclusiva do Windows, o interpretador está fixado em Python 3.12 pela interseção de wheels das dependências do núcleo — teto que esta fase deve reconfirmar no portão de captura, e os dados vivem em `D:\VoxVault\` porque o drive do código não tem espaço.
+Três restrições herdadas moldam o que segue: a captura de áudio do sistema depende de uma interface exclusiva do Windows, o interpretador tem piso em Python 3.12 por causa do `numpy`, sem teto, o que o portão de captura confirmou ao escolher um backend sem extensão compilada, e os dados vivem em `D:\VoxVault\` porque o drive do código não tem espaço.
 
 ## Goals / Non-Goals
 

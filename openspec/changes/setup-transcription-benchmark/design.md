@@ -33,11 +33,23 @@ Duas restrições saem daí e não são negociáveis: o código vive em `E:` mas
 
 ### Python 3.12, não o 3.14 do sistema
 
-A versão sai da interseção de wheels para Windows entre as dependências do núcleo, não de preferência. Verificado no índice de pacotes: `ctranslate2` publica de 3.9 a 3.14; `soxr` publica de 3.9 a 3.12, **salta o 3.13** e volta no 3.14; `numpy` exige 3.12 ou superior; `faster-whisper` e `soundfile` são Python puro. O 3.12 é a única versão coberta por todas ao mesmo tempo, e o 3.13 — que seria o passo adiante natural — é justamente o buraco. O `uv` já tem 3.12.12 instalado nesta máquina e gerencia o interpretador sem tocar no Python do sistema.
+**Há piso, e não há teto.** O piso é 3.12, vindo do `numpy`, que não instala abaixo disso.
 
-O teto `<3.13` é **desta fase, não do projeto**. Ele já foi justificado pelo `PyAudioWPatch`, que foi reprovado; a justificativa acima é a que resta. O backend de captura da Fase 1 ainda será escolhido pelo portão de validação `2.0.x` e pode impor restrição de ABI própria — reconfirmar ou revisar a faixa é tarefa daquele portão, e não uma herança silenciosa desta fase.
+Esta decisão foi justificada erradamente duas vezes antes de ser medida direito, e vale registrar como, porque o erro é fácil de repetir. A primeira justificativa apontava o `PyAudioWPatch`, que depois foi reprovado no portão de captura. A segunda leu as tags dos wheels do `soxr`, viu `cp312` sem um `cp313` ao lado, e concluiu que o 3.13 era um buraco. O arquivo real é `soxr-1.1.0-cp312-abi3-win_amd64.whl`: a tag **`abi3`** significa ABI estável, e esse único wheel instala em 3.12, 3.13, 3.14 e adiante. Ler a tag pela metade inventou uma restrição que nunca existiu.
 
-*Alternativa considerada:* usar o 3.14 do sistema. Rejeitada aqui porque esta fase mede qualidade de transcrição e trocar o interpretador não melhora nada nessa medida — mas deixa de ser inviável se o portão da Fase 1 apontar para lá.
+Verificado no índice de pacotes e no portão de captura da Fase 1:
+
+| dependência | alcance real |
+|---|---|
+| `numpy` | exige 3.12 ou superior — é o piso |
+| `soxr` | `cp312-abi3`, instala de 3.12 para cima |
+| `ctranslate2` | wheels de 3.9 a 3.14 |
+| `faster-whisper`, `soundfile` | Python puro |
+| captura WASAPI | `ctypes` sobre a API do sistema, sem extensão compilada e sem ABI própria |
+
+Portanto `requires-python = ">=3.12"`. O `uv` já tem 3.12.12 instalado nesta máquina e gerencia o interpretador sem tocar no Python do sistema, então 3.12 continua sendo o que o ambiente usa — mas por escolha, não por impedimento.
+
+*Lição registrada:* uma tag de wheel só diz o que se lê dela inteira. `cp312-abi3` e `cp312-cp312` parecem quase iguais e significam coisas bem diferentes.
 
 ### faster-whisper (CTranslate2) como implementação local
 

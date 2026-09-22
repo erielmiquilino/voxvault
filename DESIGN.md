@@ -233,14 +233,15 @@ qualquer outra coisa.**
 
 ### 6.6 Python 3.14
 
-O 3.14 do sistema não serve para a venv do núcleo, mas a razão não é "o
-ecossistema não acompanha" — é a interseção de wheels no Windows. O `soxr`
-publica até 3.12, **pula o 3.13** e volta no 3.14; o `numpy` exige 3.12+; o
-`ctranslate2` cobre 3.9 a 3.14. O **3.12** é a única versão coberta por todas,
-e é a que o uv já tem instalada.
+A venv do núcleo tem **piso em 3.12 e nenhum teto**. O piso vem do `numpy`,
+que não instala abaixo disso. Não há teto porque o `soxr` publica wheel de ABI
+estável (`soxr-1.1.0-cp312-abi3-win_amd64.whl`, que serve de 3.12 para cima), o
+`ctranslate2` cobre até 3.14, `faster-whisper` e `soundfile` são Python puro, e
+a captura é `ctypes` sobre a API do Windows, sem extensão compilada.
 
-O teto será reconfirmado ou revisado quando o portão de captura da Fase 1
-escolher o backend, que é quem pode impor ABI própria.
+Usamos 3.12 porque é o que o uv já tem instalado, não porque algo impeça mais.
+O 3.14 do sistema segue não servindo para a venv — mas por gestão de ambiente,
+não por incompatibilidade.
 
 ### 6.7 Consentimento
 

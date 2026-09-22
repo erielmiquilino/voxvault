@@ -36,7 +36,14 @@ def build_v1_database(path: Path) -> None:
     conn.close()
 
 
-def seed_v1_records(path: Path, directory: Path) -> None:
+def seed_v1_records(path: Path, directory: Path, *, filler: int = 0) -> None:
+    """Records a previous build left behind, which no migration may lose.
+
+    ``filler`` pads the meeting so that rebuilding the search index takes long
+    enough for two processes starting together to genuinely overlap. Without
+    it the migration finishes in microseconds and the race being tested would
+    almost never happen.
+    """
     conn = sqlite3.connect(path, isolation_level=None)
     conn.execute("BEGIN IMMEDIATE")
     conn.execute(
@@ -57,6 +64,10 @@ def seed_v1_records(path: Path, directory: Path) -> None:
         [
             ("mic", "eu", 0, 1000, "combinamos a reunião de quarta"),
             ("system", "outros", 1200, 2000, "perfeito, ate quarta"),
+        ]
+        + [
+            ("mic", "eu", 3000 + i, 3001 + i, f"enchimento numero {i} da ata")
+            for i in range(filler)
         ],
     )
     conn.execute("UPDATE meetings SET active_revision_id = 1 WHERE id = 1")
@@ -118,23 +129,22 @@ def test_two_processes_opening_a_stale_database_migrate_exactly_once(
     db_path: Path, tmp_path: Path
 ) -> None:
     build_v1_database(db_path)
-    seed_v1_records(db_path, tmp_path / "antiga")
+    seed_v1_records(db_path, tmp_path / "antiga", filler=40_000)
     barrier = tmp_path / "go"
 
-    first = spawn("open_and_report", str(db_path), str(barrier))
-    second = spawn("open_and_report", str(db_path), str(barrier))
-    wait_ready(first)
-    wait_ready(second)
+    processes = [spawn("open_and_report", str(db_path), str(barrier)) for _ in range(4)]
+    for process in processes:
+        wait_ready(process)
     barrier.write_text("go", encoding="utf-8")
+    results = [result_of(process, timeout_s=120) for process in processes]
 
-    left = result_of(first)
-    right = result_of(second)
-
-    assert left["pid"] != right["pid"]
-    applied = sorted([left["applied"], right["applied"]])
-    assert applied == [[], [2]], f"as migracoes nao foram aplicadas uma unica vez: {applied}"
-    assert left["version"] == right["version"] == SCHEMA_VERSION
-    assert left["meetings"] == right["meetings"] == 1
+    assert len({r["pid"] for r in results}) == 4
+    applied = sorted([r["applied"] for r in results])
+    assert applied == [[], [], [], [2]], (
+        f"as migracoes nao foram aplicadas uma unica vez: {applied}"
+    )
+    assert {r["version"] for r in results} == {SCHEMA_VERSION}
+    assert {r["meetings"] for r in results} == {1}
 
     with TranscriptStore(db_path) as store:
         versions = [

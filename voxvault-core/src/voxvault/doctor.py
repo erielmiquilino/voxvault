@@ -51,14 +51,17 @@ class Report:
 def _check_python() -> DiagnosticItem:
     major, minor = sys.version_info[:2]
     version = f"{major}.{minor}.{sys.version_info[2]}"
-    if (major, minor) == (3, 12):
+    # Floor only: numpy needs 3.12. Nothing above it is excluded -- soxr ships
+    # a stable-ABI wheel and the capture backend is ctypes over the system API,
+    # with no compiled extension of its own.
+    if (major, minor) >= (3, 12):
         return DiagnosticItem(
             "python", "Interpretador Python", "ok",
             f"{version} em {sys.executable}",
         )
     return DiagnosticItem(
         "python", "Interpretador Python", "falha",
-        f"{version}; esperado 3.12 (intersecao de wheels: soxr pula o 3.13)",
+        f"{version}; e exigido 3.12 ou superior (piso vindo do numpy)",
         remedy="Recrie o ambiente com: uv venv --python 3.12",
     )
 

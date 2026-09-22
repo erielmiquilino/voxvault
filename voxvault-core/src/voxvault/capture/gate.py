@@ -33,11 +33,13 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from ..errors import CaptureError
 from ..types import CapturePacket
 from . import devices, wasapi
 from .anchor import Anchor
 from .format import SAMPLE_FLOAT32, SAMPLE_INT16, parse_wave_format
 from .stream import CaptureStream
+from .stream import prewarm as stream_prewarm
 
 # --------------------------------------------------------------------------
 # a tone source, so the loopback track has something to capture
@@ -229,7 +231,6 @@ class CpuLoad:
                 break
 
     def start(self) -> None:
-        import os
         import subprocess
 
         self._stop.clear()
@@ -250,7 +251,6 @@ class CpuLoad:
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             )
-        _ = os
 
     def stop(self) -> None:
         self._stop.set()
@@ -424,6 +424,21 @@ def select_endpoints(role: str = devices.ROLE_COMMUNICATIONS) -> Selection:
     if render is None:
         notes.append("Nenhum dispositivo de SAIDA disponivel para o papel.")
     return Selection(mic=mic, render=render, note=" ".join(notes))
+
+
+def _guard(step, *args, **kwargs) -> bool:
+    """Run one gate step, reporting a failure instead of unwinding.
+
+    An endpoint can be enumerable and still unusable -- a Remote Desktop
+    endpoint whose audio channel has dropped answers ``GetMixFormat`` with
+    ``REGDB_E_CLASSNOTREG``. That is a result the report should carry, not a
+    traceback that stops the remaining steps from running.
+    """
+    try:
+        return bool(step(*args, **kwargs))
+    except (CaptureError, OSError) as exc:
+        print(f"\n  FALHA: {exc}")
+        return False
 
 
 def _print_header(title: str) -> None:
@@ -668,8 +683,72 @@ def run_load(
 # --------------------------------------------------------------------------
 
 
+@dataclass
+class LossObservation:
+    """One provoked capture loss, seen through both channels."""
+
+    stall_s: float
+    packets: int
+    flagged: int
+    jump_ms: list[int]
+    flags_seen: set[str]
+
+    @property
+    def lost_ms(self) -> int:
+        return max(self.jump_ms) if self.jump_ms else 0
+
+
+def _provoke_loss(
+    endpoint: devices.AudioEndpoint, stall_s: float, buffer_ms: int = 200
+) -> LossObservation:
+    """Stop draining for longer than the engine buffer, then look at the seam."""
+    stream = CaptureStream(
+        endpoint.id, loopback=True, name="loopback", buffer_ms=buffer_ms
+    )
+    stream.debug_stall_after_s = 1.5
+    stream.debug_stall_s = stall_s
+    tone = TonePlayer(endpoint.id)
+    packets: list[CapturePacket] = []
+    try:
+        stream.start()
+        tone.start()
+        deadline = time.monotonic() + 2.0 + stall_s + 1.5
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            packets.extend(stream.read())
+    finally:
+        tone.stop()
+        stream.stop()
+
+    rate = stream.format.sample_rate
+    flags_seen: set[str] = set()
+    jumps: list[int] = []
+    previous = None
+    for packet in packets:
+        if packet.discontinuity:
+            flags_seen.add("DATA_DISCONTINUITY")
+        if packet.silent:
+            flags_seen.add("SILENT")
+        if not packet.timestamp_valid:
+            flags_seen.add("TIMESTAMP_ERROR")
+        if previous is not None:
+            missing = packet.device_position - (
+                previous.device_position + previous.frames
+            )
+            if missing > rate // 100:  # more than 10 ms unaccounted for
+                jumps.append(missing * 1000 // rate)
+        previous = packet
+    return LossObservation(
+        stall_s=stall_s,
+        packets=len(packets),
+        flagged=sum(1 for p in packets if p.discontinuity),
+        jump_ms=jumps,
+        flags_seen=flags_seen,
+    )
+
+
 def run_discontinuity(
-    role: str = devices.ROLE_COMMUNICATIONS, stall_s: float = 0.6
+    role: str = devices.ROLE_COMMUNICATIONS, stall_s: float = 2.0
 ) -> bool:
     _print_header("2.0.3  Sinalizacao de descontinuidade do sistema operacional")
     selection = select_endpoints(role)
@@ -677,69 +756,56 @@ def run_discontinuity(
         print("FALHA: " + selection.note)
         return False
 
-    stream = CaptureStream(
-        selection.render.id, loopback=True, name="loopback", record_arrival=True
+    print(
+        "Metodo: parar de drenar por mais tempo que o buffer do motor, para que\n"
+        "o driver sobrescreva quadros nunca lidos. A perda e entao observada por\n"
+        "dois canais independentes: a flag do sistema operacional e o salto da\n"
+        "posicao de dispositivo. Varias provocacoes, porque a flag nao e\n"
+        "emitida de forma deterministica para uma mesma perda.\n"
     )
-    # Stop draining for longer than the engine buffer: the driver overwrites
-    # frames we never read, and the next GetBuffer must say so.
-    stream.debug_stall_after_s = 1.5
-    stream.debug_stall_s = stall_s
 
-    tone = TonePlayer(selection.render.id)
-    observed: list[tuple[CapturePacket, int]] = []
-    try:
-        stream.start(timeout_s=5.0)
-        tone.start()
+    observations = [
+        _provoke_loss(selection.render, stall)
+        for stall in (stall_s, max(1.0, stall_s / 2), 0.6)
+    ]
+    for observation in observations:
         print(
-            f"buffer do motor: {stream.buffer_frames} quadros "
-            f"({stream.buffer_frames / stream.format.sample_rate * 1000:.0f} ms); "
-            f"pausa provocada: {stall_s * 1000:.0f} ms"
-        )
-        deadline = time.monotonic() + 4.0
-        while time.monotonic() < deadline:
-            time.sleep(0.05)
-            observed.extend(stream.read_with_arrival())
-    finally:
-        tone.stop()
-        stream.stop()
-
-    rate = stream.format.sample_rate
-    flagged = [p for p, _ in observed if p.discontinuity]
-    print(f"\npacotes observados: {len(observed)}; com descontinuidade: {len(flagged)}")
-
-    first_is_flagged = bool(observed) and observed[0][0].discontinuity
-    if first_is_flagged:
-        print(
-            "  o primeiro pacote do fluxo vem sinalizado -- normal, e o inicio "
-            "do fluxo, nao perda"
+            f"  pausa {observation.stall_s:.1f} s -> pacotes={observation.packets} "
+            f"sinalizados={observation.flagged} perda={observation.lost_ms} ms "
+            f"flags vistas={sorted(observation.flags_seen) or ['nenhuma']}"
         )
 
-    provoked = [p for p in flagged if not (observed and p is observed[0][0])]
-    for packet in provoked[:5]:
+    flag_received = any(o.flagged for o in observations)
+    with_loss = [o for o in observations if o.lost_ms > 0]
+    position_always = len(with_loss) == len(observations)
+    unflagged = [o for o in with_loss if o.flagged == 0]
+
+    print()
+    print(
+        f"    flag DATA_DISCONTINUITY recebida ................. "
+        f"{'sim' if flag_received else 'NAO'} "
+        f"({sum(o.flagged for o in observations)} pacotes em "
+        f"{sum(1 for o in observations if o.flagged)}/{len(observations)} provocacoes)"
+    )
+    print(
+        f"    perda visivel na posicao de dispositivo .......... "
+        f"{'sim' if position_always else 'NAO'} "
+        f"({len(with_loss)}/{len(observations)} provocacoes)"
+    )
+    if unflagged:
         print(
-            f"  descontinuidade em devpos={packet.device_position} "
-            f"qpc_ns={packet.qpc_ns} quadros={packet.frames}"
+            f"    NOTA: {len(unflagged)} perda(s) real(is) de ate "
+            f"{max(o.lost_ms for o in unflagged)} ms nao foram sinalizadas.\n"
+            "          A flag e necessaria mas nao suficiente neste endpoint; a\n"
+            "          regra de lacuna precisa tambem do salto de posicao, como\n"
+            "          a especificacao ja exige ao ligar as duas condicoes por\n"
+            "          'ou'. Depender so da flag perderia lacunas reais."
         )
 
-    # Independent evidence of the same loss: the device position jumped by
-    # more than the frames actually handed over.
-    jumps: list[tuple[int, int]] = []
-    previous = None
-    for packet, _ in observed:
-        if previous is not None:
-            expected = previous.device_position + previous.frames
-            delta = packet.device_position - expected
-            if delta > rate // 100:  # more than 10 ms unaccounted for
-                jumps.append((delta, delta * 1000 // rate))
-        previous = packet
-    for frames, ms in jumps[:5]:
-        print(f"  salto de posicao de dispositivo: {frames} quadros ({ms} ms)")
-
-    ok = bool(provoked) and bool(jumps)
+    ok = flag_received and position_always
     if not ok:
         print(
-            "\n  a pausa provocada nao gerou perda observavel; "
-            "aumente --stall ou verifique o tamanho do buffer"
+            "\n  perda provocada insuficiente; aumente --stall ou reduza o buffer"
         )
     print("\n2.0.3: " + ("APROVADO" if ok else "REPROVADO"))
     return ok
@@ -819,18 +885,46 @@ def run_probe(seconds: float = 4.0, role: str = devices.ROLE_COMMUNICATIONS) -> 
     return True
 
 
+def run_prewarm(role: str = devices.ROLE_COMMUNICATIONS) -> bool:
+    """Pay the first-Initialize cost once, and report it.
+
+    Worth its own step because the number is a design input: if it is seconds,
+    the resident service has to do this at startup rather than when the user
+    presses record.
+    """
+    _print_header("Aquecimento do motor de audio")
+    selection = select_endpoints(role)
+    for label, endpoint, loopback in (
+        ("entrada", selection.mic, False),
+        ("saida", selection.render, True),
+    ):
+        if endpoint is None:
+            print(f"  {label:<8} (nenhum dispositivo)")
+            continue
+        first = stream_prewarm(endpoint.id, loopback=loopback)
+        second = stream_prewarm(endpoint.id, loopback=loopback)
+        print(
+            f"  {label:<8} {endpoint.name}\n"
+            f"           primeira abertura={first:9.1f} ms  "
+            f"segunda={second:9.1f} ms"
+        )
+    return True
+
+
 def run_all(args: argparse.Namespace) -> bool:
-    run_list()
-    run_probe(seconds=args.seconds / 2, role=args.role)
+    _guard(run_list)
+    _guard(run_prewarm, role=args.role)
+    _guard(run_probe, seconds=args.seconds / 2, role=args.role)
     results = {
-        "2.0.1": run_packets(seconds=args.seconds, role=args.role),
-        "2.0.2": run_load(
+        "2.0.1": _guard(run_packets, seconds=args.seconds, role=args.role),
+        "2.0.2": _guard(
+            run_load,
             seconds=args.seconds * 2,
             role=args.role,
             threads=args.threads,
             processes=args.processes,
         ),
-        "2.0.3": run_discontinuity(role=args.role, stall_s=args.stall),
+        "2.0.3": _guard(run_discontinuity, role=args.role, stall_s=args.stall),
     }
     _print_header("Resultado do portao de captura")
     for name, passed in results.items():
@@ -847,12 +941,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "mode",
-        choices=["all", "list", "probe", "packets", "load", "discontinuity"],
+        choices=[
+            "all",
+            "list",
+            "prewarm",
+            "probe",
+            "packets",
+            "load",
+            "discontinuity",
+        ],
         nargs="?",
         default="all",
     )
     parser.add_argument("--seconds", type=float, default=6.0)
-    parser.add_argument("--stall", type=float, default=0.6)
+    parser.add_argument("--stall", type=float, default=2.0)
     parser.add_argument("--processes", type=int, default=2)
     parser.add_argument(
         "--threads",
@@ -870,20 +972,23 @@ def main(argv: list[str] | None = None) -> int:
 
     wasapi.co_initialize()
     if args.mode == "list":
-        ok = run_list()
+        ok = _guard(run_list)
+    elif args.mode == "prewarm":
+        ok = _guard(run_prewarm, role=args.role)
     elif args.mode == "probe":
-        ok = run_probe(seconds=args.seconds, role=args.role)
+        ok = _guard(run_probe, seconds=args.seconds, role=args.role)
     elif args.mode == "packets":
-        ok = run_packets(seconds=args.seconds, role=args.role)
+        ok = _guard(run_packets, seconds=args.seconds, role=args.role)
     elif args.mode == "load":
-        ok = run_load(
+        ok = _guard(
+            run_load,
             seconds=args.seconds,
             role=args.role,
             threads=args.threads,
             processes=args.processes,
         )
     elif args.mode == "discontinuity":
-        ok = run_discontinuity(role=args.role, stall_s=args.stall)
+        ok = _guard(run_discontinuity, role=args.role, stall_s=args.stall)
     else:
         ok = run_all(args)
     return 0 if ok else 1

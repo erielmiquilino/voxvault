@@ -97,6 +97,8 @@ class CaptureStream:
         self._latency_ns: int = 0
         self._device_period_ns: int = 0
         self._priority_status: str = "nao solicitada"
+        self._arming_ms: float = 0.0
+        self._initialize_ms: float = 0.0
 
         self.frames_captured: int = 0
         self.packets_captured: int = 0
@@ -143,6 +145,27 @@ class CaptureStream:
         return self._priority_status
 
     @property
+    def arming_ms(self) -> float:
+        """Wall-clock cost of opening and arming, for the metadata.
+
+        The specification caps the delay between the command and the session
+        instant, and requires the breach to be *recorded* rather than treated
+        as a failure -- so this is measured and reported, never asserted here.
+        """
+        return self._arming_ms
+
+    @property
+    def initialize_ms(self) -> float:
+        """Cost of ``IAudioClient::Initialize`` alone.
+
+        Measured separately because it dominates: the first Initialize in a
+        process can take seconds on some endpoints while later ones take
+        milliseconds, which is the case for pre-warming the audio engine when
+        the service starts instead of when the user presses record.
+        """
+        return self._initialize_ms
+
+    @property
     def pending_frames(self) -> int:
         """Frames captured but not yet drained -- the durability exposure."""
         return self.frames_captured - self._frames_read
@@ -167,13 +190,22 @@ class CaptureStream:
 
     # -- lifecycle --------------------------------------------------------
 
-    def start(self, timeout_s: float = 3.0) -> int:
+    def start(self, timeout_s: float = 120.0) -> int:
         """Open, initialise and start the stream. Returns the arming instant.
 
         Blocks until the stream is armed so the caller can treat the returned
         QPC instant as the track's reference. Raises whatever the reader
         thread raised while opening.
+
+        ``timeout_s`` is a guard against a wedged driver, not the start-latency
+        budget: an endpoint that is merely slow must still open, with the delay
+        recorded in :attr:`arming_ms` for the caller to judge against the
+        1500 ms ceiling. Failures inside opening are reported immediately and
+        do not wait for the timeout. The default is deliberately generous --
+        a cold Remote Desktop endpoint was measured taking over 30 s inside
+        ``Initialize`` and then working perfectly.
         """
+        started_at = time.perf_counter()
         if self._thread is not None:
             raise CaptureError(f"fluxo '{self.name}' ja foi iniciado")
         self._thread = threading.Thread(
@@ -185,6 +217,7 @@ class CaptureStream:
             raise CaptureError(
                 f"fluxo '{self.name}' nao ficou armado em {timeout_s:.1f} s"
             )
+        self._arming_ms = (time.perf_counter() - started_at) * 1000.0
         if self._error is not None:
             raise self._error
         return self._armed_qpc_ns
@@ -300,6 +333,7 @@ class CaptureStream:
             if self.event_driven:
                 flags |= wasapi.AUDCLNT_STREAMFLAGS_EVENTCALLBACK
 
+            initialize_at = time.perf_counter()
             client.initialize(
                 share_mode=wasapi.AUDCLNT_SHAREMODE_SHARED,
                 stream_flags=flags,
@@ -307,6 +341,7 @@ class CaptureStream:
                 periodicity_hns=0,
                 format_ptr=format_ptr,
             )
+            self._initialize_ms = (time.perf_counter() - initialize_at) * 1000.0
         finally:
             wasapi._ole32.CoTaskMemFree(format_ptr)
 
@@ -440,6 +475,32 @@ class CaptureStream:
                 release_buffer(this, frames)
                 if not frames:
                     break
+
+
+def prewarm(endpoint_id: str, *, loopback: bool = True) -> float:
+    """Open and immediately close a stream, returning the cost in milliseconds.
+
+    The first ``IAudioClient::Initialize`` in a process can be orders of
+    magnitude slower than every later one -- seconds rather than milliseconds
+    on endpoints whose audio path has to be negotiated, such as a Remote
+    Desktop endpoint. Paying that once when the resident service starts keeps
+    it out of the start-recording budget, which the specification caps at
+    1500 ms.
+
+    Failures are swallowed: pre-warming is an optimisation, and the real
+    attempt must be the one that reports a problem.
+    """
+    started = time.perf_counter()
+    stream = CaptureStream(
+        endpoint_id, loopback=loopback, name="prewarm", pro_audio_priority=False
+    )
+    try:
+        stream.start()
+    except Exception:
+        return (time.perf_counter() - started) * 1000.0
+    finally:
+        stream.stop()
+    return (time.perf_counter() - started) * 1000.0
 
 
 def open_pair(

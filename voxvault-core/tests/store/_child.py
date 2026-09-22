@@ -71,6 +71,40 @@ def hold_write_lock(db: str, seconds: str) -> None:
     _emit({"held": float(seconds)})
 
 
+def hold_big_write(db: str, seconds: str, rows: str = "100000") -> None:
+    """Write a long meeting's worth of segments and hold the transaction open.
+
+    The size matters. A small uncommitted write only takes a RESERVED lock,
+    which does not block readers under any journal mode, so a small writer
+    would prove nothing about write-ahead logging. A write that outgrows the
+    page cache spills to disk and escalates to EXCLUSIVE -- and that is where a
+    rollback journal stops every reader dead and the write-ahead log does not.
+    """
+    store = TranscriptStore(db)
+    meeting = store.get_meeting("reuniao-base")
+    revision_id = meeting.active_revision_id
+    filler = "transcricao longa " * 12
+    store._conn.execute("BEGIN IMMEDIATE")
+    store._conn.execute(
+        "INSERT INTO meetings(uid, title, started_at_ms, state, origin, directory,"
+        " created_at_ms, updated_at_ms) VALUES ('bloqueador', 'bloqueador', 0,"
+        " 'gravando', 'gravada', '.', 0, 0)"
+    )
+    store._conn.executemany(
+        "INSERT INTO segments(revision_id, meeting_id, track, speaker, start_ms,"
+        " end_ms, text) VALUES (?, ?, 'mic', 'eu', ?, ?, ?)",
+        [
+            (revision_id, meeting.id, 10_000 + i, 10_001 + i, f"{filler} {i}")
+            for i in range(int(rows))
+        ],
+    )
+    _ready()
+    time.sleep(float(seconds))
+    store._conn.execute("ROLLBACK")
+    store.close()
+    _emit({"rows": int(rows)})
+
+
 def hold_raw_lock(db: str, seconds: str) -> None:
     """Hold the write lock on a database this process refuses to migrate."""
     conn = sqlite3.connect(db, timeout=60.0, isolation_level=None)
@@ -139,14 +173,21 @@ def write_meetings(db: str, prefix: str, count: str, barrier: str = "") -> None:
     )
 
 
-def read_under_write(db: str, seconds: str) -> None:
-    """Read repeatedly and report the slowest read and what was visible."""
+def read_under_write(db: str, seconds: str, barrier: str) -> None:
+    """Read repeatedly and report the slowest read and what was visible.
+
+    The store is opened *before* signalling readiness and the timed loop only
+    starts once the barrier appears. Otherwise a blocked open would absorb the
+    contention and the reads that follow would look unblocked -- which is
+    exactly how this test once passed with write-ahead logging turned off.
+    """
     store = TranscriptStore(db)
+    _ready()
+    _await_file(Path(barrier))
     deadline = time.perf_counter() + float(seconds)
     slowest = 0.0
     reads = 0
     saw_uncommitted = False
-    _ready()
     while time.perf_counter() < deadline:
         started = time.perf_counter()
         uids = {m.uid for m in store.list_meetings()}
@@ -214,6 +255,10 @@ def seed_and_export(db: str, uid: str) -> None:
 def _wait_for_barrier(path: Path, timeout_s: float = 30.0) -> None:
     """Start together, so the race being tested actually happens."""
     _ready()
+    _await_file(path, timeout_s)
+
+
+def _await_file(path: Path, timeout_s: float = 60.0) -> None:
     deadline = time.perf_counter() + timeout_s
     while time.perf_counter() < deadline:
         if path.exists():
@@ -224,6 +269,7 @@ def _wait_for_barrier(path: Path, timeout_s: float = 30.0) -> None:
 
 COMMANDS = {
     "hold_write_lock": hold_write_lock,
+    "hold_big_write": hold_big_write,
     "hold_raw_lock": hold_raw_lock,
     "open_and_report": open_and_report,
     "write_meetings": write_meetings,

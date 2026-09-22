@@ -156,3 +156,135 @@ def decide_gap(
 
 def frames_to_ms(frames: int, sample_rate: int) -> int:
     return frames * 1000 // sample_rate
+
+
+@dataclass(frozen=True, slots=True)
+class Placement:
+    """Where one packet lands on its track."""
+
+    silence_frames: int
+    trim_frames: int
+    write_frames: int
+    gap: bool
+    reason: str = ""
+    #: Position came from the continuous frame count, not from the report.
+    derived: bool = False
+    #: The anchor was re-established on this packet.
+    reanchored: bool = False
+
+    @property
+    def total_frames(self) -> int:
+        return self.silence_frames + self.write_frames
+
+
+class TrackPlacer:
+    """Places a track's packets on the common session timeline.
+
+    Position zero is the instant *both* streams were armed, which is what the
+    caller passes as ``session_qpc_ns``. Everything else follows from the
+    anchor, so the four behaviours the specification separates fall out of one
+    comparison instead of four special cases:
+
+    * the loopback track that stays idle for the first thirty seconds -- its
+      anchor is set on the first packet it does deliver, and the interval back
+      to the session start is silence;
+    * a packet delivered late but complete -- the device position has not run
+      ahead of the frames handed over, so nothing is inserted;
+    * a real gap -- the device position has run ahead, or the OS said so;
+    * overlapping packets -- only the excess is written, and the write
+      position never moves backwards.
+
+    The class holds no audio and calls nothing: it decides frame counts, which
+    is why every one of those behaviours is a unit test with no device.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_qpc_ns: int,
+        sample_rate: int,
+        threshold_ms: int = 200,
+    ) -> None:
+        if sample_rate <= 0:
+            raise ValueError("sample_rate deve ser maior que zero")
+        self.session_qpc_ns = session_qpc_ns
+        self.sample_rate = sample_rate
+        self.threshold_ms = threshold_ms
+        self.anchor: Anchor | None = None
+        #: Device position that corresponds to written position zero.
+        self.base_position: int = 0
+        self.written_frames: int = 0
+        self.gaps: list[tuple[int, int, str]] = []  # (start_frame, frames, reason)
+        self.derived_packets: int = 0
+        self.reanchors: int = 0
+        self.duplicated_frames_dropped: int = 0
+
+    @property
+    def written_ms(self) -> int:
+        return frames_to_ms(self.written_frames, self.sample_rate)
+
+    def _anchor_on(self, packet: CapturePacket, *, reanchor: bool) -> None:
+        self.anchor = Anchor(packet.device_position, packet.qpc_ns, self.sample_rate)
+        if reanchor:
+            # Re-establishing after a stretch of derived positions: the packet
+            # must land exactly where writing stopped, not jump.
+            self.base_position = packet.device_position - self.written_frames
+            self.reanchors += 1
+        else:
+            self.base_position = self.anchor.position_of(self.session_qpc_ns)
+
+    def place(self, packet: CapturePacket) -> Placement:
+        """Decide what this packet contributes, and advance the write position."""
+        if not packet.timestamp_valid:
+            # Degrade locally and record it -- never switch to counting frames
+            # as the normal mode of operation.
+            self.derived_packets += 1
+            placement = Placement(
+                silence_frames=0,
+                trim_frames=0,
+                write_frames=packet.frames,
+                gap=False,
+                reason="posicao derivada da contagem continua de quadros",
+                derived=True,
+            )
+            self.written_frames += packet.frames
+            return placement
+
+        reanchor = self.anchor is not None and self.derived_packets > 0
+        if self.anchor is None or reanchor:
+            first = self.anchor is None
+            self._anchor_on(packet, reanchor=not first)
+            self.derived_packets = 0
+            if not first:
+                self.written_frames += packet.frames
+                return Placement(
+                    silence_frames=0,
+                    trim_frames=0,
+                    write_frames=packet.frames,
+                    gap=False,
+                    reason="ancora restabelecida",
+                    reanchored=True,
+                )
+
+        decision = decide_gap(
+            expected_position=self.base_position + self.written_frames,
+            packet_position=packet.device_position,
+            packet_frames=packet.frames,
+            sample_rate=self.sample_rate,
+            threshold_ms=self.threshold_ms,
+            discontinuity=packet.discontinuity,
+        )
+        if decision.gap and decision.silence_frames:
+            self.gaps.append(
+                (self.written_frames, decision.silence_frames, decision.reason)
+            )
+        if decision.trim_frames:
+            self.duplicated_frames_dropped += decision.trim_frames
+        self.written_frames += decision.silence_frames + decision.write_frames
+        return Placement(
+            silence_frames=decision.silence_frames,
+            trim_frames=decision.trim_frames,
+            write_frames=decision.write_frames,
+            gap=decision.gap,
+            reason=decision.reason,
+        )

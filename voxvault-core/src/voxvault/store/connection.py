@@ -80,22 +80,31 @@ def _read_version_without_writing(path: Path) -> int:
     """
     if not path.exists():
         return 0
-    uri = f"{path.resolve().as_uri()}?mode=ro"
     try:
-        probe = sqlite3.connect(uri, uri=True, timeout=5.0)
+        return _read_version(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     except sqlite3.Error:
-        # Read-only open can fail when the shared-memory file of a live WAL
-        # database cannot be created. Fall back to a normal connection held in
-        # query-only mode, which also refuses every write.
-        probe = sqlite3.connect(path, timeout=5.0)
-        probe.execute("PRAGMA query_only = ON")
+        # A process killed mid-write leaves the write-ahead log needing
+        # recovery, and recovery needs write access to the shared-memory file
+        # that a read-only connection cannot obtain. Recovering after a crash
+        # is a first-class scenario here, so fall back to a writable
+        # connection pinned in query-only mode: it can recover the log and
+        # still refuses every write of ours.
+        pass
     try:
-        return schema.read_version(probe)
+        return _read_version(str(path), uri=False, query_only=True)
     except sqlite3.DatabaseError as exc:
         raise StorageError(
             f"Nao foi possivel ler a versao do esquema em {path}: {exc}. "
             f"O arquivo pode nao ser um banco do VoxVault."
         ) from None
+
+
+def _read_version(target: str, *, uri: bool, query_only: bool = False) -> int:
+    probe = sqlite3.connect(target, uri=uri, timeout=5.0)
+    try:
+        if query_only:
+            probe.execute("PRAGMA query_only = ON")
+        return schema.read_version(probe)
     finally:
         probe.close()
 
@@ -133,7 +142,16 @@ def open_connection(
             if is_busy_error(exc):
                 raise _migration_wait_expired(path, migration_timeout_s) from None
             raise
-        applied = _migrate(conn, path, migration_timeout_s)
+        # A database already at the current version is opened without taking
+        # the write lock at all. Taking it would make every startup queue
+        # behind whatever is writing -- an MCP server opening while the
+        # resident service publishes a transcription would simply wait, and
+        # startup time is a product requirement.
+        applied = (
+            []
+            if schema.read_version(conn) == schema.SCHEMA_VERSION
+            else _migrate(conn, path, migration_timeout_s)
+        )
         # Back to the normal write-contention budget once the schema is settled.
         conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_s * 1000)}")
     except BaseException:
