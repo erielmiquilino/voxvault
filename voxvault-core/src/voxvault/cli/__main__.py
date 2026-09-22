@@ -221,19 +221,13 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 def _cmd_devices(args: argparse.Namespace) -> int:
     try:
-        from ..capture.devices import list_devices  # noqa: PLC0415
+        from ..capture.devices import format_endpoints, list_endpoints  # noqa: PLC0415
     except Exception as exc:
         sys.stderr.write(f"Backend de captura indisponivel: {exc}\n")
         return 1
 
-    for device in list_devices():
-        kind = "entrada" if getattr(device, "is_input", False) else "saida "
-        roles = ",".join(getattr(device, "default_roles", []) or []) or "-"
-        sys.stdout.write(
-            f"[{kind}] {getattr(device, 'name', '?')}\n"
-            f"         id: {getattr(device, 'id', '?')}\n"
-            f"         padrao para: {roles}\n"
-        )
+    sys.stdout.write(format_endpoints(list_endpoints()))
+    sys.stdout.write("\n")
     return 0
 
 

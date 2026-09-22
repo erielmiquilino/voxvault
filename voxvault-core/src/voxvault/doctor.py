@@ -164,34 +164,49 @@ def _check_libraries() -> DiagnosticItem:
 def _check_capture() -> DiagnosticItem:
     """Enumerate real audio endpoints, when the capture backend is present."""
     try:
-        from .capture.devices import list_devices  # noqa: PLC0415
+        from .capture.devices import (  # noqa: PLC0415
+            FLOW_CAPTURE,
+            FLOW_RENDER,
+            list_endpoints,
+        )
     except Exception as exc:
         return DiagnosticItem(
-            "captura", "Captura de audio", "aviso",
-            f"Backend de captura ainda indisponivel: {exc}",
-            remedy="Conclua o portao de captura da Fase 1.",
+            "captura", "Captura de audio", "falha",
+            f"Backend de captura indisponivel: {exc}",
+            remedy="Reinstale o pacote; a gravacao depende dele.",
         )
     try:
-        devices = list_devices()
+        endpoints = list_endpoints()
     except Exception as exc:
         return DiagnosticItem(
             "captura", "Captura de audio", "falha",
             f"Falha ao enumerar dispositivos: {exc}",
             remedy="Verifique o painel de som do Windows.",
         )
-    inputs = [d for d in devices if getattr(d, "is_input", False)]
-    outputs = [d for d in devices if not getattr(d, "is_input", False)]
+
+    inputs = [e for e in endpoints if e.flow == FLOW_CAPTURE]
+    outputs = [e for e in endpoints if e.flow == FLOW_RENDER]
     if not inputs or not outputs:
         return DiagnosticItem(
             "captura", "Captura de audio", "falha",
-            f"{len(inputs)} entrada(s) e {len(outputs)} saida(s) encontradas; "
-            f"as duas trilhas exigem pelo menos uma de cada.",
+            f"{len(inputs)} entrada(s) e {len(outputs)} saida(s) ativas; as duas "
+            f"trilhas exigem pelo menos uma de cada.",
             remedy="Conecte um microfone e um dispositivo de saida.",
         )
-    return DiagnosticItem(
-        "captura", "Captura de audio", "ok",
-        f"{len(inputs)} entrada(s) e {len(outputs)} saida(s) disponiveis",
-    )
+
+    default_out = next((e for e in outputs if e.default_for), None)
+    detail = f"{len(inputs)} entrada(s) e {len(outputs)} saida(s) ativas"
+    # Speakers mean the microphone re-captures the other participants, and the
+    # same speech lands on both tracks. Worth saying before the meeting, not after.
+    if default_out is not None and not default_out.looks_like_headphones:
+        return DiagnosticItem(
+            "captura", "Captura de audio", "aviso",
+            f"{detail}. A saida padrao ('{default_out.name}') nao parece fone: "
+            f"o microfone vai recapturar a voz dos outros, e a mesma fala "
+            f"aparece nas duas trilhas.",
+            remedy="Use fone de ouvido para que a separacao das trilhas seja limpa.",
+        )
+    return DiagnosticItem("captura", "Captura de audio", "ok", detail)
 
 
 def run_diagnostics(config: Config | None = None) -> Report:

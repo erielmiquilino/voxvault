@@ -23,10 +23,16 @@ class Track(enum.StrEnum):
 
 
 class Speaker(enum.StrEnum):
-    """Attribution presented to a reader."""
+    """Attribution presented to a reader.
+
+    UNKNOWN exists for imported media: a file dropped in has neither a
+    microphone nor a system track, and forcing it into one of the two would
+    state an attribution the audio does not support.
+    """
 
     ME = "eu"
     OTHERS = "outros"
+    UNKNOWN = "desconhecido"
 
 
 TRACK_TO_SPEAKER: dict[Track, Speaker] = {
