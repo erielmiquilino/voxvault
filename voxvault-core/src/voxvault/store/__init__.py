@@ -77,6 +77,7 @@ from .notes import (
 )
 from .schema import SCHEMA_VERSION
 from .store import TranscriptStore
+from .threadlocal import ThreadLocalStore
 from .timeline import (
     find_overlaps,
     format_duration,
@@ -118,6 +119,7 @@ __all__ = [
     "TIMELINE_HEADING",
     "TRACK_IMPORTED",
     "TranscriptState",
+    "ThreadLocalStore",
     "TranscriptStore",
     "WriteFailure",
     "capture_execution_path",

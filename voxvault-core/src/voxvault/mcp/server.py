@@ -17,7 +17,6 @@ and an agent editing it would make it worthless as evidence.
 from __future__ import annotations
 
 import hashlib
-import threading
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
@@ -52,32 +51,24 @@ class _Session:
         # happens to be, and deriving the store from that is how two processes
         # end up quietly pointed at two different databases.
         self.config = config or load_config()
-        # One connection per thread. The protocol layer runs each synchronous
-        # tool on a worker thread, and a sqlite3 connection belongs to the
-        # thread that opened it -- sharing one would fail on the first call
-        # from a different worker. Write-ahead logging is what makes several
-        # handles on one database safe, and it is already on.
-        self._local = threading.local()
+        # The protocol layer runs each synchronous tool on a worker thread,
+        # and a sqlite3 connection belongs to the thread that opened it.
+        self._handles = None
         self.client = "cliente-mcp"
 
     @property
     def store(self):
-        existing = getattr(self._local, "store", None)
-        if existing is not None:
-            return existing
+        if self._handles is None:
+            from ..store import ThreadLocalStore  # noqa: PLC0415
 
-        from ..store import TranscriptStore  # noqa: PLC0415
-
-        self.config.data_dir.mkdir(parents=True, exist_ok=True)
-        handle = TranscriptStore(self.config.db_path)
-        self._local.store = handle
-        return handle
+            self.config.data_dir.mkdir(parents=True, exist_ok=True)
+            self._handles = ThreadLocalStore(self.config.db_path)
+        return self._handles.handle
 
     def close(self) -> None:
-        handle = getattr(self._local, "store", None)
-        if handle is not None:
-            handle.close()
-            self._local.store = None
+        if self._handles is not None:
+            self._handles.close_all()
+            self._handles = None
 
 
 SESSION = _Session()

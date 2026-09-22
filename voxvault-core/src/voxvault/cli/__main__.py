@@ -137,6 +137,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     devices.set_defaults(handler=_cmd_devices)
 
+    serve = sub.add_parser(
+        "serve",
+        help="Executa o servico residente, dono da captura e da fila.",
+    )
+    serve.add_argument(
+        "--status", action="store_true",
+        help="Apenas informa se ha um servico em execucao.",
+    )
+    serve.set_defaults(handler=_cmd_serve)
+
     mcp_cmd = sub.add_parser(
         "mcp", help="Verifica e registra o servidor MCP nos clientes de agente."
     )
@@ -689,6 +699,56 @@ def _cmd_devices(args: argparse.Namespace) -> int:
     sys.stdout.write(format_endpoints(list_endpoints()))
     sys.stdout.write("\n")
     return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    from ..service import ResidentService, ServiceBusy  # noqa: PLC0415
+    from ..service.rendezvous import live_rendezvous, rendezvous_path  # noqa: PLC0415
+
+    config = _load(args)
+
+    if args.status:
+        found = live_rendezvous()
+        if found is None:
+            sys.stdout.write(
+                f"Nenhum servico em execucao.\n  ponto de encontro: "
+                f"{rendezvous_path()}\n"
+            )
+            return 1
+        sys.stdout.write(
+            f"Servico em execucao\n"
+            f"  endereco:  {found.endereco}\n"
+            f"  processo:  {found.pid}\n"
+            f"  dados:     {found.diretorio_de_dados}\n"
+        )
+        return 0
+
+    service = ResidentService(config)
+    try:
+        sys.stdout.write(
+            f"Servico residente do VoxVault\n"
+            f"  dados: {config.data_dir}  <- {config.source_of('data_dir')}\n"
+        )
+        service.claim_machine()
+    except ServiceBusy as exc:
+        sys.stderr.write(f"{exc}\n")
+        found = live_rendezvous()
+        if found is not None:
+            sys.stderr.write(f"O servico em execucao atende em {found.endereco}.\n")
+        return 1
+
+    # The claim is re-taken inside serve(); release this one so it is not held
+    # twice by the same process.
+    if service._claim is not None:
+        service._claim.release()
+        service._claim = None
+
+    try:
+        return service.serve()
+    except KeyboardInterrupt:
+        sys.stdout.write("\nEncerrando o servico.\n")
+        service.shutdown()
+        return 0
 
 
 def _cmd_mcp(args: argparse.Namespace) -> int:

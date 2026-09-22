@@ -176,31 +176,31 @@ class TranscriptionPipeline:
         # loop runs on its own thread, so it opens its own handle rather than
         # borrowing the caller's; write-ahead logging is what makes two handles
         # on one database safe.
-        self._local = threading.local()
+        self._handles = None
         self._owner = threading.current_thread()
 
     # -- storage per thread ---------------------------------------------
 
     @property
     def _db(self):
-        """The store handle belonging to the calling thread."""
-        existing = getattr(self._local, "store", None)
-        if existing is not None:
-            return existing
-        if threading.current_thread() is self._owner:
-            handle = self._store
-        else:
-            from ..store import TranscriptStore  # noqa: PLC0415
+        """The store handle belonging to the calling thread.
 
-            handle = TranscriptStore(self._config.db_path)
-        self._local.store = handle
-        return handle
+        The caller's own handle is reused on the caller's thread; the queue
+        loop, which runs on its own, opens one of its own through the shared
+        helper.
+        """
+        if threading.current_thread() is self._owner:
+            return self._store
+        if self._handles is None:
+            from ..store import ThreadLocalStore  # noqa: PLC0415
+
+            self._handles = ThreadLocalStore(self._config.db_path)
+        return self._handles.handle
 
     def _close_thread_store(self) -> None:
-        handle = getattr(self._local, "store", None)
-        if handle is not None and handle is not self._store:
-            handle.close()
-        self._local.store = None
+        if self._handles is not None:
+            self._handles.close_all()
+            self._handles = None
 
     # -- queue ---------------------------------------------------------
 
