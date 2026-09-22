@@ -332,6 +332,71 @@ class RecordingSession:
             for track, writer in self._writers.items()
         }
 
+    # -- the durable minimum -------------------------------------------
+
+    def durable_minimum(self, reason: str = "suspensao do sistema") -> float:
+        """Make the recording survivable, and nothing more. Returns elapsed ms.
+
+        The operating system gives about two seconds' warning before it
+        suspends. A full finalization compresses the whole recording losslessly
+        and does not remotely fit in that, so attempting it would lose the
+        meeting rather than save it.
+
+        Four things, in this order: stop capturing, force the pending audio
+        out, close the files, persist the metadata with the real duration and
+        why it ended. Compression, exports and queueing are derived work, and
+        the resume -- or the next start, if this process does not survive --
+        picks them up from what is on disk.
+        """
+        began = time.perf_counter()
+        if self._finished:
+            return 0.0
+
+        self._halt.set()
+        if self.supervisor is not None:
+            self.supervisor.stop()
+
+        for stream in list(self._streams.values()):
+            try:
+                stream.stop()
+            except Exception:
+                pass
+
+        for writer in self._writers.values():
+            try:
+                writer.maybe_flush(force=True)
+            except Exception:
+                pass
+
+        duration = self.duration_ms
+        stats = self.track_stats()
+        for writer in self._writers.values():
+            try:
+                writer.close()
+            except Exception:
+                pass
+        self._finished = True
+        self._duration_at_stop = duration
+        self._drift_at_stop = self.drift_ms
+
+        metadata = read_metadata(self.directory) or Metadata(uid=self.uid)
+        metadata.title = self.title
+        metadata.started_at = self.started_at.isoformat()
+        metadata.duration_ms = duration
+        metadata.ended_at = now_iso()
+        metadata.tracks = stats
+        metadata.pauses = [p.as_dict() for p in self._pauses]
+        metadata.warnings = list(self._warnings) + [
+            f"a gravacao foi encerrada por {reason}"
+        ]
+        # Stops at "files closed": everything after it is derived work that
+        # the resume redoes, and claiming otherwise would make recovery skip
+        # steps that never ran.
+        metadata.step = Step.FILES_CLOSED.value
+        write_metadata(self.directory, metadata)
+
+        return (time.perf_counter() - began) * 1000
+
     # -- stopping ------------------------------------------------------
 
     def stop(self, *, submit=None, compress: bool = True) -> SessionReport:

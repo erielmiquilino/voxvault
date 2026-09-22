@@ -100,6 +100,8 @@ class ResidentService:
         self._server: ThreadingHTTPServer | None = None
         self._secret = ""
         self._events: list[tuple[str, str, float]] = []
+        self._power = None
+        self._suspended_session = ""
 
     # -- lifecycle -----------------------------------------------------
 
@@ -208,6 +210,7 @@ class ResidentService:
         self.recover()
         self.pipeline.start()
         self._prewarm_devices()
+        self._watch_power()
 
         supervisor = threading.Thread(
             target=self._supervise, name="voxvault-supervisao", daemon=True
@@ -258,6 +261,63 @@ class ResidentService:
             target=warm, name="voxvault-aquecimento", daemon=True
         ).start()
 
+    def _watch_power(self) -> None:
+        """React to suspend by making the recording durable, and nothing else."""
+        from .power import DURABLE_MINIMUM_MS, PowerWatcher  # noqa: PLC0415
+
+        watcher = PowerWatcher(
+            on_suspend=self._on_suspend, on_resume=self._on_resume
+        )
+        if watcher.start():
+            self._power = watcher
+            self._record_event("energia", "aviso de suspensao registrado")
+        else:
+            # Not fatal: the recorder still works, it just will not get the
+            # warning, and the next start recovers the session instead.
+            self._record_event(
+                "aviso",
+                f"sem aviso de suspensao ({watcher.failure}); uma suspensao "
+                f"durante a gravacao sera recuperada na proxima inicializacao",
+            )
+
+    def _on_suspend(self) -> None:
+        with self._lock:
+            session = self._session
+            self._session = None
+        if session is None:
+            return
+        elapsed = session.durable_minimum("suspensao do sistema")
+        self._suspended_session = session.uid
+        from .power import DURABLE_MINIMUM_MS  # noqa: PLC0415
+
+        self._record_event(
+            "suspensao",
+            f"minimo duravel de '{session.title}' em {elapsed:.0f} ms"
+            + ("" if elapsed <= DURABLE_MINIMUM_MS else
+               f" (acima do teto de {DURABLE_MINIMUM_MS} ms)"),
+        )
+
+    def _on_resume(self) -> None:
+        """Finish what the suspend deliberately left undone.
+
+        Never reopens the recording: the meeting ended when the machine went
+        to sleep, and resuming capture into the same file would silently join
+        two different conversations.
+        """
+        uid, self._suspended_session = self._suspended_session, ""
+        if not uid:
+            return
+        self._record_event(
+            "retomada",
+            f"a sessao '{uid}' foi encerrada pela suspensao; concluindo a "
+            f"compressao e o enfileiramento",
+        )
+        try:
+            summary = self.recover()
+            self._record_event("retomada", f"recuperacao: {summary}")
+        except Exception as exc:
+            self._record_event("aviso", f"recuperacao apos retomada: {exc}")
+
     def _supervise(self) -> None:
         """End the service once there is genuinely nothing to hold it open."""
         while not self._halt.wait(SUPERVISION_INTERVAL_S):
@@ -306,6 +366,9 @@ class ResidentService:
                 self.stop_recording()
             except Exception:
                 pass
+        if self._power is not None:
+            self._power.stop()
+            self._power = None
         if self._pipeline is not None:
             self._pipeline.stop()
         if self._store is not None:
