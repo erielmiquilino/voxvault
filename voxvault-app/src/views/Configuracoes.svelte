@@ -2,6 +2,13 @@
   // Settings: the choices that change how the tool behaves, in one place, plus
   // the environment diagnostic made readable for someone who is not going to
   // open a terminal.
+  //
+  // Every value shown here carries the source that imposed it, because that is
+  // what decides whether this screen may offer to change it at all: a value
+  // coming from the environment outranks the file this screen writes, and
+  // accepting an edit that the precedence would annul is worse than refusing
+  // it -- the user would see the change saved and keep operating on the old
+  // setting with no signal.
   import { open } from "@tauri-apps/plugin-dialog";
 
   import {
@@ -14,7 +21,11 @@
     diretorioDeDadosAlterar,
     diretorioDeDadosValidar,
     dispositivos as lerDispositivos,
-    trechoMcp,
+    mcpEstado,
+    mcpRegistrar,
+    type Configuracao,
+    type Dispositivo,
+    type Doctor,
     type DiretorioDeDados,
     type Falha,
     type ItemDeDiagnostico,
@@ -23,9 +34,8 @@
   import { bytes } from "../lib/format";
   import Pendencia from "../lib/components/Pendencia.svelte";
 
-  /** Characteristics that orient the choice, from the project's own design
-   *  notes. The memory a model actually needs on this machine is computed by
-   *  the core's diagnostic, which is why it is labelled approximate here. */
+  /** Characteristics that orient the choice. The memory a model actually needs
+   *  on this machine comes from the diagnostic, not from this table. */
   const MOTORES = [
     {
       id: "large-v3",
@@ -37,8 +47,7 @@
       id: "large-v3-turbo",
       nome: "Whisper large-v3-turbo",
       memoria: "≈ 3,5 GB de VRAM",
-      velocidade:
-        "Decoder de 4 camadas: bem mais rápido, com perda pequena mas real em pt-BR.",
+      velocidade: "Decoder de 4 camadas: bem mais rápido, com perda pequena mas real em pt-BR.",
     },
     {
       id: "medium",
@@ -46,6 +55,11 @@
       memoria: "≈ 2,5 GB de VRAM",
       velocidade: "Rápido. Perde nomes próprios e siglas com mais frequência.",
     },
+  ];
+
+  const PAPEIS = [
+    { valor: "comunicacoes", rotulo: "Comunicações" },
+    { valor: "multimidia", rotulo: "Multimídia" },
   ];
 
   const gravacaoAtiva = $derived(shell.servico?.saude?.gravacao_ativa ?? false);
@@ -56,43 +70,140 @@
   );
 
   let dados = $state<DiretorioDeDados | null>(null);
-  let novoCaminho = $state("");
+  let config = $state<Configuracao | null>(null);
+  let listaDeDispositivos = $state<Dispositivo[]>([]);
+  let doctor = $state<Doctor | null>(null);
+  let itensDoApp = $state<ItemDeDiagnostico[]>([]);
+  let trecho = $state("");
+
   let falhaDispositivos = $state<Falha | null>(null);
   let falhaConfig = $state<Falha | null>(null);
   let falhaDoctor = $state<Falha | null>(null);
-  let itens = $state<ItemDeDiagnostico[]>([]);
-  let trecho = $state("");
+  let falhaMcp = $state<Falha | null>(null);
+
+  let novoCaminho = $state("");
   let vocabulario = $state("");
   let motorEscolhido = $state("large-v3");
+  let papel = $state("comunicacoes");
+  let micPolicy = $state("seguir_padrao");
+  let systemPolicy = $state("seguir_padrao");
+  let micDeviceId = $state("");
+  let systemDeviceId = $state("");
+
   let salvando = $state(false);
+  let registrando = $state(false);
+  let recarregando = $state(false);
+
+  const valor = (campo: string) => config?.valores?.[campo]?.valor ?? "";
+  const origem = (campo: string) => config?.valores?.[campo]?.origem ?? "";
+
+  const entradas = $derived(listaDeDispositivos.filter((d) => d.fluxo === "entrada"));
+  const saidas = $derived(listaDeDispositivos.filter((d) => d.fluxo === "saida"));
+
+  /** A pinned device that is no longer present will make the next recording
+   *  fail, and saying so now is the whole difference between a tool that warns
+   *  and one that surprises. */
+  function fixadoIndisponivel(politica: string, id: string, fluxo: "entrada" | "saida") {
+    if (politica !== "fixado" || !id) return false;
+    return !listaDeDispositivos.some((d) => d.fluxo === fluxo && d.id === id);
+  }
+
+  const micFixadoSumiu = $derived(fixadoIndisponivel(micPolicy, micDeviceId, "entrada"));
+  const systemFixadoSumiu = $derived(fixadoIndisponivel(systemPolicy, systemDeviceId, "saida"));
+
+  /** The output the system track will actually capture from, given the current
+   *  choice. Shown explicitly because "follow the role" is not a device name. */
+  const saidaEfetiva = $derived.by(() => {
+    if (systemPolicy === "fixado") {
+      return saidas.find((d) => d.id === systemDeviceId)?.nome ?? "dispositivo fixado ausente";
+    }
+    return saidas.find((d) => d.padrao_de.includes(papel))?.nome ?? "nenhum";
+  });
+
+  const entradaEfetiva = $derived.by(() => {
+    if (micPolicy === "fixado") {
+      return entradas.find((d) => d.id === micDeviceId)?.nome ?? "dispositivo fixado ausente";
+    }
+    return entradas.find((d) => d.padrao_de.includes(papel))?.nome ?? "nenhum";
+  });
 
   $effect(() => {
     void recarregar();
   });
 
   async function recarregar() {
-    dados = await diretorioDeDados();
-    itens = await diagnosticoDoAplicativo();
-    trecho = await trechoMcp();
+    recarregando = true;
     try {
-      await lerDispositivos();
-      falhaDispositivos = null;
-    } catch (erro) {
-      falhaDispositivos = comoFalha(erro);
-    }
-    try {
-      await configuracaoLer();
-      falhaConfig = null;
-    } catch (erro) {
-      falhaConfig = comoFalha(erro);
-    }
-    try {
-      await diagnosticoDoNucleo();
-      falhaDoctor = null;
-    } catch (erro) {
-      falhaDoctor = comoFalha(erro);
+      dados = await diretorioDeDados();
+      itensDoApp = await diagnosticoDoAplicativo();
+
+      try {
+        config = await configuracaoLer();
+        falhaConfig = null;
+        vocabulario = valor("vocabulary");
+        motorEscolhido = valor("model") || "large-v3";
+        papel = valor("device_role") || "comunicacoes";
+        micPolicy = valor("mic_policy") || "seguir_padrao";
+        systemPolicy = valor("system_policy") || "seguir_padrao";
+        micDeviceId = valor("mic_device_id");
+        systemDeviceId = valor("system_device_id");
+      } catch (erro) {
+        falhaConfig = comoFalha(erro);
+      }
+
+      try {
+        listaDeDispositivos = (await lerDispositivos()).dispositivos;
+        falhaDispositivos = null;
+      } catch (erro) {
+        falhaDispositivos = comoFalha(erro);
+      }
+
+      try {
+        doctor = await diagnosticoDoNucleo();
+        falhaDoctor = null;
+      } catch (erro) {
+        falhaDoctor = comoFalha(erro);
+      }
+
+      try {
+        trecho = await mcpEstado();
+        falhaMcp = null;
+      } catch (erro) {
+        falhaMcp = comoFalha(erro);
+      }
+    } finally {
+      recarregando = false;
     }
   }
+
+  async function gravarCampo(atribuicoes: string[], sucesso: string) {
+    salvando = true;
+    try {
+      await configuracaoGravar(atribuicoes);
+      recado("ok", sucesso);
+      recado(
+        "info",
+        "O serviço residente lê a configuração ao iniciar; a mudança vale a partir do próximo início dele.",
+      );
+      await recarregar();
+    } catch (erro) {
+      recado("erro", comoFalha(erro).mensagem);
+    } finally {
+      salvando = false;
+    }
+  }
+
+  const gravarDispositivos = () =>
+    gravarCampo(
+      [
+        `device_role=${papel}`,
+        `mic_policy=${micPolicy}`,
+        `system_policy=${systemPolicy}`,
+        `mic_device_id=${micPolicy === "fixado" ? micDeviceId : ""}`,
+        `system_device_id=${systemPolicy === "fixado" ? systemDeviceId : ""}`,
+      ],
+      "Escolha de dispositivos gravada na configuração compartilhada.",
+    );
 
   async function escolherDiretorio() {
     const escolha = await open({ directory: true, title: "Escolha o diretório de dados" });
@@ -100,10 +211,7 @@
     novoCaminho = escolha;
     try {
       const prova = await diretorioDeDadosValidar(escolha);
-      recado(
-        "ok",
-        `Caminho gravável. ${bytes(prova.livre_bytes)} livres no volume escolhido.`,
-      );
+      recado("ok", `Caminho gravável. ${bytes(prova.livre_bytes)} livres no volume escolhido.`);
     } catch (erro) {
       recado("erro", comoFalha(erro).mensagem);
     }
@@ -113,16 +221,12 @@
     if (!novoCaminho.trim()) return;
     salvando = true;
     try {
-      const mensagem = await diretorioDeDadosAlterar(novoCaminho.trim());
-      recado("ok", mensagem);
-      // The resident service resolves the data directory when it starts, so the
-      // change does not take effect until it comes back. Saying "gravado" and
-      // stopping there would leave the user operating on the old storage.
+      recado("ok", await diretorioDeDadosAlterar(novoCaminho.trim()));
       recado(
         "info",
-        "O serviço residente precisa reiniciar para passar a apontar para o novo " +
-          "diretório. Ele se encerra sozinho por ociosidade e volta na próxima " +
-          "ação; a barra de estado confirma para onde ele voltou.",
+        "O serviço residente precisa reiniciar para apontar para o novo diretório. " +
+          "Ele se encerra sozinho por ociosidade e volta na próxima ação; a barra de " +
+          "estado confirma para onde ele voltou.",
       );
       await recarregar();
       novoCaminho = "";
@@ -133,22 +237,27 @@
     }
   }
 
-  async function gravarCampo(atribuicoes: string[], sucesso: string) {
-    salvando = true;
+  async function copiarTrecho() {
+    await navigator.clipboard.writeText(trecho);
+    recado("ok", "Conteúdo copiado.");
+  }
+
+  async function registrarMcp() {
+    registrando = true;
     try {
-      await configuracaoGravar(atribuicoes);
-      recado("ok", sucesso);
+      trecho = await mcpRegistrar();
+      recado("ok", "Registro do servidor MCP gravado nos clientes encontrados.");
+      recado("info", "Reinicie o cliente de agente para que ele leia o registro novo.");
     } catch (erro) {
       recado("erro", comoFalha(erro).mensagem);
     } finally {
-      salvando = false;
+      registrando = false;
     }
   }
 
-  async function copiarTrecho() {
-    await navigator.clipboard.writeText(trecho);
-    recado("ok", "Trecho de configuração copiado.");
-  }
+  /** The inference item from the diagnostic is what says whether the selected
+   *  model can run here at all, before any transcription is attempted. */
+  const itemDeInferencia = $derived(doctor?.itens.find((i) => i.chave === "inferencia") ?? null);
 </script>
 
 <div class="corpo">
@@ -191,6 +300,124 @@
         <div style="margin-top:12px">
           <Pendencia falha={falhaDispositivos} titulo="Lista de dispositivos indisponível" />
         </div>
+      {:else}
+        <label class="campo" style="margin:14px 0">
+          Papel a seguir quando não houver dispositivo fixado
+          <select bind:value={papel} style="width:auto">
+            {#each PAPEIS as p (p.valor)}
+              <option value={p.valor}>{p.rotulo}</option>
+            {/each}
+          </select>
+        </label>
+
+        <div class="grade-dupla">
+          {#each [{ titulo: "Microfone (trilha de entrada)", fluxo: "entrada", lista: entradas, politica: micPolicy, id: micDeviceId, sumiu: micFixadoSumiu, efetivo: entradaEfetiva }, { titulo: "Saída (trilha do sistema)", fluxo: "saida", lista: saidas, politica: systemPolicy, id: systemDeviceId, sumiu: systemFixadoSumiu, efetivo: saidaEfetiva }] as bloco (bloco.fluxo)}
+            <div>
+              <h3 style="margin-bottom:6px">{bloco.titulo}</h3>
+              <p class="legenda" style="margin-bottom:8px">
+                Será usado: <strong>{bloco.efetivo}</strong>
+              </p>
+
+              <label class="campo" style="margin-bottom:8px">
+                <span>
+                  <input
+                    type="radio"
+                    checked={bloco.politica === "seguir_padrao"}
+                    onchange={() => {
+                      if (bloco.fluxo === "entrada") micPolicy = "seguir_padrao";
+                      else systemPolicy = "seguir_padrao";
+                    }}
+                    style="width:auto"
+                  />
+                  Seguir o padrão do papel escolhido
+                </span>
+              </label>
+              <label class="campo">
+                <span>
+                  <input
+                    type="radio"
+                    checked={bloco.politica === "fixado"}
+                    onchange={() => {
+                      if (bloco.fluxo === "entrada") micPolicy = "fixado";
+                      else systemPolicy = "fixado";
+                    }}
+                    style="width:auto"
+                  />
+                  Fixar um dispositivo
+                </span>
+                <select
+                  disabled={bloco.politica !== "fixado"}
+                  value={bloco.id}
+                  onchange={(e) => {
+                    const v = (e.currentTarget as HTMLSelectElement).value;
+                    if (bloco.fluxo === "entrada") micDeviceId = v;
+                    else systemDeviceId = v;
+                  }}
+                >
+                  <option value="">— escolha —</option>
+                  {#each bloco.lista as d (d.id)}
+                    <option value={d.id}>
+                      {d.nome}{d.padrao_de.length ? ` · padrão de ${d.padrao_de.join(", ")}` : ""}
+                    </option>
+                  {/each}
+                  {#if bloco.sumiu}
+                    <option value={bloco.id}>{bloco.id} (não está mais disponível)</option>
+                  {/if}
+                </select>
+              </label>
+
+              {#if bloco.sumiu}
+                <div class="nota erro" style="margin-top:8px">
+                  <strong>Dispositivo fixado indisponível</strong>
+                  <p style="margin:0">
+                    O dispositivo escolhido não está mais presente. A gravação
+                    desta trilha vai falhar até que a escolha seja corrigida.
+                  </p>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+
+        {#if saidas.length > 0 && !saidas.some((d) => d.parece_fone)}
+          <div class="nota alerta" style="margin-top:12px">
+            <strong>Risco de eco</strong>
+            <p style="margin:0">
+              Nenhuma saída disponível parece ser um fone. Sem fone, o microfone
+              capta a voz dos outros e o mesmo trecho aparece nas duas trilhas.
+            </p>
+          </div>
+        {/if}
+
+        <details style="margin-top:12px">
+          <summary class="legenda" style="cursor:pointer">
+            Ver todos os dispositivos e seus identificadores persistentes
+          </summary>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+            {#each listaDeDispositivos as d (d.id)}
+              <div class="nota" style="padding:8px 11px">
+                <div class="linha" style="justify-content:space-between">
+                  <strong style="margin:0">{d.nome}</strong>
+                  <span class="linha">
+                    <span class="selo">{d.fluxo}</span>
+                    <span class={`selo ${d.estado === "ativo" ? "ok" : "erro"}`}>{d.estado}</span>
+                    {#if d.parece_fone}<span class="selo acento">fone</span>{/if}
+                  </span>
+                </div>
+                {#if d.padrao_de.length}
+                  <div class="legenda">padrão de: {d.padrao_de.join(", ")}</div>
+                {/if}
+                <div class="mono" style="word-break:break-all;opacity:.7">{d.id}</div>
+              </div>
+            {/each}
+          </div>
+        </details>
+
+        <div class="linha fim" style="margin-top:12px">
+          <button class="botao primario" disabled={salvando} onclick={gravarDispositivos}>
+            Gravar escolha de dispositivos
+          </button>
+        </div>
       {/if}
     </section>
 
@@ -228,20 +455,22 @@
         {/each}
       </div>
 
-      <div class="nota alerta">
-        <strong>Não é possível verificar se o modelo cabe neste ambiente</strong>
-        <p style="margin:0">
-          A memória livre da GPU e a usabilidade do runtime de inferência vêm do
-          diagnóstico do núcleo, que ainda não tem saída legível por máquina.
-          Até lá, a incompatibilidade só apareceria na primeira transcrição.
-        </p>
-      </div>
+      {#if itemDeInferencia}
+        <div class="nota" class:erro={itemDeInferencia.estado === "falha"} class:acento={itemDeInferencia.estado === "ok"}>
+          <strong>Ambiente de inferência</strong>
+          <p style="margin:0">{itemDeInferencia.detalhe}</p>
+          {#if itemDeInferencia.acao}
+            <p class="legenda" style="margin:6px 0 0">{itemDeInferencia.acao}</p>
+          {/if}
+        </div>
+      {/if}
 
       <div class="linha fim" style="margin-top:12px">
         <button
           class="botao primario"
           disabled={salvando}
-          onclick={() => gravarCampo([`model=${motorEscolhido}`], "Modelo gravado na configuração compartilhada.")}
+          onclick={() =>
+            gravarCampo([`model=${motorEscolhido}`], "Modelo gravado na configuração compartilhada.")}
         >
           Gravar o modelo
         </button>
@@ -252,7 +481,7 @@
     <section class="cartao">
       <header>
         <h2>Diretório de dados</h2>
-        {#if dados}<span class="selo">origem: {dados.fonte_legivel}</span>{/if}
+        {#if dados}<span class="selo">origem: {origem("data_dir") || dados.fonte_legivel}</span>{/if}
       </header>
 
       {#if dados}
@@ -265,6 +494,19 @@
 
         {#if dados.aviso}
           <div class="nota erro"><strong>Espaço baixo</strong><p style="margin:0">{dados.aviso}</p></div>
+        {/if}
+
+        {#if shell.servico?.data_dir_do_servico && shell.servico.data_dir_do_servico !== dados.caminho}
+          <div class="nota alerta">
+            <strong>O serviço está em outro diretório</strong>
+            <p style="margin:0">
+              O serviço residente em execução resolveu
+              <code class="mono">{shell.servico.data_dir_do_servico}</code>, enquanto
+              este aplicativo resolve <code class="mono">{dados.caminho}</code>.
+              Ele resolve o diretório ao iniciar; reinicie-o para que os dois
+              coincidam.
+            </p>
+          </div>
         {/if}
 
         {#if !dados.alteravel}
@@ -314,7 +556,10 @@
 
     <!-- Vocabulary -->
     <section class="cartao">
-      <header><h2>Vocabulário de domínio</h2></header>
+      <header>
+        <h2>Vocabulário de domínio</h2>
+        {#if config}<span class="selo">origem: {origem("vocabulary")}</span>{/if}
+      </header>
       <p class="legenda">
         Nomes, siglas e jargão do time. O vocabulário é entregue ao modelo antes da
         transcrição e reduz erros em palavras que ele não conhece. Alterá-lo não
@@ -344,42 +589,79 @@
     <section class="cartao" id="diagnostico">
       <header>
         <h2>Diagnóstico de ambiente</h2>
-        <button class="botao discreto" onclick={recarregar}>Reexecutar</button>
+        <button class="botao discreto" onclick={recarregar} disabled={recarregando}>
+          {recarregando ? "Verificando..." : "Reexecutar"}
+        </button>
       </header>
 
-      <div style="display:flex;flex-direction:column;gap:8px">
-        {#each itens as item (item.nome)}
-          <div class="nota" class:erro={!item.ok} class:acento={item.ok}>
-            <div class="linha" style="justify-content:space-between">
-              <strong style="margin:0">{item.nome}</strong>
-              <span class={`selo ${item.ok ? "ok" : "erro"}`}>
-                {item.ok ? "em ordem" : "em falha"}
-              </span>
+      {#if doctor}
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+          {#each doctor.itens as item (item.chave)}
+            <div
+              class="nota"
+              class:erro={item.estado === "falha"}
+              class:alerta={item.estado === "aviso"}
+              class:acento={item.estado === "ok"}
+            >
+              <div class="linha" style="justify-content:space-between">
+                <strong style="margin:0">{item.rotulo}</strong>
+                <span class={`selo ${item.estado === "ok" ? "ok" : item.estado === "aviso" ? "alerta" : "erro"}`}>
+                  {item.estado === "ok" ? "em ordem" : item.estado === "aviso" ? "atenção" : "em falha"}
+                </span>
+              </div>
+              <p class="legenda" style="margin:6px 0 0;white-space:pre-wrap">{item.detalhe}</p>
+              {#if item.acao}
+                <p class="legenda" style="margin:6px 0 0"><strong>O que fazer:</strong> {item.acao}</p>
+              {/if}
             </div>
-            <p class="legenda" style="margin:6px 0 0;white-space:pre-wrap">{item.detalhe}</p>
-            {#if item.acao}
-              <p class="legenda" style="margin:6px 0 0"><strong>O que fazer:</strong> {item.acao}</p>
-            {/if}
-          </div>
-        {/each}
-      </div>
-
-      {#if falhaDoctor}
-        <div style="margin-top:12px">
-          <Pendencia falha={falhaDoctor} titulo="Diagnóstico do núcleo indisponível" />
-          <p class="legenda">
-            Os itens acima são os que o aplicativo verifica por conta própria. Os do
-            núcleo — bibliotecas de áudio, decodificador de mídia, runtime de
-            inferência e captura — só aparecem aqui quando o comando publicar saída
-            legível por máquina.
-          </p>
+          {/each}
         </div>
+      {:else if falhaDoctor}
+        <Pendencia falha={falhaDoctor} titulo="Diagnóstico do núcleo indisponível" />
       {/if}
+
+      <details>
+        <summary class="legenda" style="cursor:pointer">
+          Verificações do próprio aplicativo
+        </summary>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          {#each itensDoApp as item (item.nome)}
+            <div class="nota" class:erro={!item.ok}>
+              <div class="linha" style="justify-content:space-between">
+                <strong style="margin:0">{item.nome}</strong>
+                <span class={`selo ${item.ok ? "ok" : "erro"}`}>
+                  {item.ok ? "em ordem" : "em falha"}
+                </span>
+              </div>
+              <p class="legenda" style="margin:6px 0 0;white-space:pre-wrap">{item.detalhe}</p>
+              {#if item.acao}
+                <p class="legenda" style="margin:6px 0 0"><strong>O que fazer:</strong> {item.acao}</p>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      </details>
 
       {#if falhaConfig}
         <div style="margin-top:12px">
           <Pendencia falha={falhaConfig} titulo="Configuração efetiva indisponível" />
         </div>
+      {:else if config}
+        <details style="margin-top:12px">
+          <summary class="legenda" style="cursor:pointer">
+            Configuração efetiva, com a origem de cada valor
+          </summary>
+          <p class="legenda" style="margin:8px 0 4px">
+            Arquivo: <code class="mono">{config.arquivo}</code>
+          </p>
+          <div style="display:grid;grid-template-columns:auto 1fr auto;gap:2px 12px;font-size:12px">
+            {#each Object.entries(config.valores) as [campo, v] (campo)}
+              <span class="mono">{campo}</span>
+              <span class="mono" style="word-break:break-all">{v.valor || "—"}</span>
+              <span class="fraco">{v.origem}</span>
+            {/each}
+          </div>
+        </details>
       {/if}
     </section>
 
@@ -387,13 +669,24 @@
     <section class="cartao">
       <header>
         <h2>Registro do servidor MCP</h2>
-        <button class="botao discreto" onclick={copiarTrecho}>Copiar</button>
+        <div class="linha">
+          <button class="botao discreto" onclick={copiarTrecho} disabled={!trecho}>Copiar</button>
+          <button class="botao primario" onclick={registrarMcp} disabled={registrando}>
+            {registrando ? "Registrando..." : "Registrar automaticamente"}
+          </button>
+        </div>
       </header>
       <p class="legenda">
-        Adicione este trecho à configuração do seu cliente de agente para que ele
-        leia as transcrições mesmo com o VoxVault fechado.
+        Com o servidor MCP registrado, o seu cliente de agente lê as transcrições
+        mesmo com o VoxVault fechado — ele abre o banco direto, em modo somente
+        leitura. O registro automático copia o arquivo de configuração atual antes
+        de alterá-lo.
       </p>
-      <pre class="trecho">{trecho}</pre>
+      {#if falhaMcp}
+        <Pendencia falha={falhaMcp} titulo="Registro MCP indisponível" />
+      {:else}
+        <pre class="trecho">{trecho}</pre>
+      {/if}
     </section>
   </div>
 </div>

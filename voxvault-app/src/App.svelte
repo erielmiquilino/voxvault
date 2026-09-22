@@ -53,6 +53,9 @@
         }
       }),
       listen<string>("servico://queda", (evento) => recado("erro", evento.payload)),
+      listen<string>("atalho://gravacao", (evento) => recado("ok", evento.payload)),
+      listen<string>("atalho://falhou", (evento) => recado("erro", evento.payload)),
+      listen<string>("atalho://indisponivel", (evento) => recado("info", evento.payload)),
       listen<string>("servico://desistiu", (evento) => recado("erro", evento.payload)),
       listen("servico://conectado", () => {
         void diagnosticoDoAplicativo().then((itens) => {

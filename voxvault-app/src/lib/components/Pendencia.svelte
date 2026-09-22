@@ -1,23 +1,16 @@
 <script lang="ts">
-  // Renders an obstacle honestly.
-  //
-  // When the core simply has no machine-readable output for something yet, that
-  // is what the user is told -- naming the command and the flag -- instead of a
-  // generic error that leaves them guessing whether they broke something.
+  // Renders an obstacle honestly: the cause the core gave, in its own words,
+  // and the corrective action when there is one. No paraphrase, because a
+  // paraphrase of an error is a second story about what went wrong.
   import type { Falha } from "../api";
 
   let { falha, titulo = "Indisponível" }: { falha: Falha; titulo?: string } = $props();
 </script>
 
-<div class="nota" class:alerta={!!falha.pendencia} class:erro={!falha.pendencia}>
+<div class="nota erro">
   <strong>{titulo}</strong>
-  <p>{falha.mensagem}</p>
+  <p style="white-space:pre-wrap">{falha.mensagem}</p>
   {#if falha.acao}
-    <p class="legenda">{falha.acao}</p>
-  {/if}
-  {#if falha.pendencia}
-    <p class="legenda" style="margin-bottom:6px">
-      Falta no núcleo: <code class="mono">{falha.pendencia.sinalizador}</code>
-    </p>
+    <p class="legenda" style="margin:0"><strong>O que fazer:</strong> {falha.acao}</p>
   {/if}
 </div>

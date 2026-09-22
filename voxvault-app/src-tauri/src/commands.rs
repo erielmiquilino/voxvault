@@ -24,18 +24,10 @@ use crate::paths::{self, DataDirSource};
 use crate::service::{self, ServiceClient};
 use crate::system;
 
-/// A missing machine-readable surface in the core, named precisely.
-#[derive(Debug, Clone, Serialize)]
-pub struct Pendencia {
-    pub comando: String,
-    pub sinalizador: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct Falha {
     pub mensagem: String,
     pub acao: Option<String>,
-    pub pendencia: Option<Pendencia>,
 }
 
 impl Falha {
@@ -43,7 +35,6 @@ impl Falha {
         Self {
             mensagem: mensagem.into(),
             acao: None,
-            pendencia: None,
         }
     }
 
@@ -51,26 +42,13 @@ impl Falha {
         Self {
             mensagem: mensagem.into(),
             acao: Some(acao.into()),
-            pendencia: None,
         }
     }
 }
 
 impl From<CoreError> for Falha {
     fn from(err: CoreError) -> Self {
-        let pendencia = match &err {
-            CoreError::SemJson {
-                comando,
-                sinalizador,
-                ..
-            } => Some(Pendencia {
-                comando: comando.clone(),
-                sinalizador: sinalizador.clone(),
-            }),
-            _ => None,
-        };
         Falha {
-            mensagem: err.mensagem(),
             acao: match &err {
                 CoreError::NaoPreparado { .. } => Some(
                     "Prepare o ambiente de execução na tela inicial do aplicativo."
@@ -78,7 +56,7 @@ impl From<CoreError> for Falha {
                 ),
                 _ => None,
             },
-            pendencia,
+            mensagem: err.mensagem(),
         }
     }
 }
@@ -273,18 +251,41 @@ pub fn gravacao_encerrar(cliente: State<'_, ServiceClient>) -> Resposta<serde_js
 // -- library ---------------------------------------------------------------
 
 #[tauri::command]
-pub fn reunioes_listar() -> Vec<library::Resumo> {
-    let (data_dir, _) = paths::effective_data_dir();
-    library::listar(&data_dir)
+pub fn reunioes_listar(limite: Option<u32>) -> Resposta<Vec<library::Resumo>> {
+    let payload = cli::list(limite.unwrap_or(200))?;
+    Ok(library::listar_do_nucleo(&payload))
 }
 
+/// The per-meeting content, read from the directory the core reported.
+///
+/// The directory comes from the caller because the list already carries the
+/// core's answer for it. Rebuilding the path from the data directory here
+/// would be a second convention for where a meeting lives.
+///
+/// Before reading, the export is checked against the revision the core says is
+/// active. They diverge whenever a meeting was re-transcribed and the exports
+/// were not regenerated, and reading a stale export would show text from a
+/// revision that is no longer the one the core would serve -- silently, and
+/// most visibly right after the reprocessing somebody asked for. Regenerating
+/// is what `voxvault export` exists to do, so it is asked to.
 #[tauri::command]
-pub fn reuniao_detalhar(uid: String) -> Resposta<library::Detalhe> {
-    let (data_dir, _) = paths::effective_data_dir();
-    library::detalhar(&data_dir, &uid).ok_or_else(|| {
-        Falha::nova(format!(
-            "A reunião {uid} não foi encontrada no diretório de dados."
-        ))
+pub fn reuniao_detalhar(
+    uid: String,
+    diretorio: String,
+    revisao_ativa: Option<String>,
+) -> Resposta<library::Detalhe> {
+    if let Some(ativa) = revisao_ativa.filter(|r| !r.is_empty()) {
+        if library::revisao_exportada(&diretorio).as_deref() != Some(ativa.as_str()) {
+            // A failure here is not fatal: the stale export is still readable,
+            // and the interface says which revision it is showing.
+            let _ = cli::export(&uid);
+        }
+    }
+    library::detalhar(&diretorio).ok_or_else(|| {
+        Falha::com_acao(
+            format!("O diretório da reunião não existe mais: {diretorio}"),
+            "Atualize a lista; a reunião pode ter sido removida fora do aplicativo.",
+        )
     })
 }
 
@@ -308,25 +309,28 @@ pub fn reuniao_exportar(uid: String) -> Resposta<Vec<String>> {
 }
 
 #[tauri::command]
-pub fn reuniao_renomear(_uid: String, _titulo: String) -> Resposta<()> {
-    Err(Falha::from(CoreError::sem_json(
-        "rename",
-        "voxvault rename <uid> --title <titulo>",
-    )))
+pub fn reuniao_renomear(uid: String, titulo: String) -> Resposta<String> {
+    cli::rename(&uid, &titulo).map_err(Falha::from)
+}
+
+/// Describe what removing the audio would cost, without removing anything.
+///
+/// The core's dry run is what the confirmation shows, so the sentence the user
+/// reads is the core's own account of what it is about to do -- not a
+/// paraphrase written here that could drift from it.
+#[tauri::command]
+pub fn reuniao_remover_audio_previa(uid: String) -> Resposta<String> {
+    cli::remove_audio(&uid, false).map_err(Falha::from)
 }
 
 #[tauri::command]
-pub fn reuniao_remover_audio(_uid: String) -> Resposta<()> {
-    Err(Falha::from(CoreError::sem_json(
-        "remove-audio",
-        "voxvault remove-audio <uid>",
-    )))
+pub fn reuniao_remover_audio(uid: String) -> Resposta<String> {
+    cli::remove_audio(&uid, true).map_err(Falha::from)
 }
 
 #[tauri::command]
-pub fn reuniao_abrir_pasta(uid: String) -> Resposta<()> {
-    let (data_dir, _) = paths::effective_data_dir();
-    system::reveal(&library::meeting_dir(&data_dir, &uid)).map_err(Falha::nova)
+pub fn reuniao_abrir_pasta(diretorio: String) -> Resposta<()> {
+    system::reveal(Path::new(&diretorio)).map_err(Falha::nova)
 }
 
 #[tauri::command]
@@ -334,19 +338,38 @@ pub fn abrir_caminho(caminho: String) -> Resposta<()> {
     system::reveal(Path::new(&caminho)).map_err(Falha::nova)
 }
 
+/// Full-text search over the history, with the scope the user chose.
+///
+/// The core answers transcript hits with an instant and a speaker, and note
+/// hits with neither -- a note has no position in the timeline, and inventing
+/// one would present interpretation as evidence. The interface renders the two
+/// differently for exactly that reason.
 #[tauri::command]
-pub fn busca(_termo: String, _limite: u32) -> Resposta<serde_json::Value> {
-    Err(Falha::from(CoreError::sem_json("search", "search --json")))
+pub fn busca(termo: String, escopo: String, limite: Option<u32>) -> Resposta<serde_json::Value> {
+    let escopo = match escopo.as_str() {
+        "transcricoes" | "notas" | "ambos" => escopo,
+        _ => "ambos".to_string(),
+    };
+    cli::search(&termo, &escopo, limite.unwrap_or(50)).map_err(Falha::from)
+}
+
+// Notes are read from the meeting's structured export -- see `library.rs` --
+// and written through the command line, which regenerates that export on every
+// write. The app therefore never keeps its own copy of a note.
+
+#[tauri::command]
+pub fn nota_criar(uid: String, tipo: String, conteudo: String) -> Resposta<String> {
+    cli::notes_add(&uid, &tipo, &conteudo).map_err(Falha::from)
 }
 
 #[tauri::command]
-pub fn notas_listar(_uid: String) -> Resposta<serde_json::Value> {
-    Err(Falha::com_acao(
-        "As notas de reunião ainda não existem no núcleo: não há tabela, comando \
-         nem arquivo que as guarde. A área de notas aparece vazia por isso, e não \
-         porque esta reunião não tenha notas.",
-        "Depende da capacidade `meeting-notes`, prevista para a fase 2 do núcleo.",
-    ))
+pub fn nota_alterar(id: String, conteudo: String) -> Resposta<String> {
+    cli::notes_update(&id, &conteudo).map_err(Falha::from)
+}
+
+#[tauri::command]
+pub fn nota_remover(id: String) -> Resposta<String> {
+    cli::notes_remove(&id).map_err(Falha::from)
 }
 
 // -- import ----------------------------------------------------------------
@@ -520,19 +543,24 @@ pub fn configuracao_gravar(atribuicoes: Vec<String>) -> Resposta<String> {
     cli::config_set(&atribuicoes).map_err(Falha::from)
 }
 
+/// The effective configuration with the provenance of every value.
+///
+/// The provenance is what the settings screen needs in order to refuse an edit
+/// it could not honour: a value imposed by the environment outranks the file
+/// this screen writes.
 #[tauri::command]
 pub fn configuracao_ler() -> Resposta<serde_json::Value> {
-    Err(Falha::from(CoreError::sem_json("config", "config --json")))
+    cli::config_read().map_err(Falha::from)
 }
 
 #[tauri::command]
 pub fn dispositivos() -> Resposta<serde_json::Value> {
-    Err(Falha::from(CoreError::sem_json("devices", "devices --json")))
+    cli::devices().map_err(Falha::from)
 }
 
 #[tauri::command]
 pub fn diagnostico_do_nucleo() -> Resposta<serde_json::Value> {
-    Err(Falha::from(CoreError::sem_json("doctor", "doctor --json")))
+    cli::doctor().map_err(Falha::from)
 }
 
 /// The diagnostics the app can answer by itself, without the core.
@@ -595,21 +623,20 @@ pub fn diagnostico_do_aplicativo(cliente: State<'_, ServiceClient>) -> Vec<ItemD
     itens
 }
 
-/// The snippet a user pastes into their agent client to register the MCP server.
+/// The core's own report on the MCP registration, shown verbatim.
+///
+/// It names each agent client, whether the server is registered there, and the
+/// snippet to add. The app does not compose that snippet: how the server is
+/// launched is the core's business, and a second copy here would drift and then
+/// fail at the client rather than here.
 #[tauri::command]
-pub fn trecho_mcp() -> String {
-    let executavel = paths::core_executable()
-        .map(display)
-        .unwrap_or_else(|| r"E:\projetosAleatorios\VoxVault\voxvault-core\.venv\Scripts\voxvault.exe".to_string());
-    serde_json::to_string_pretty(&serde_json::json!({
-        "mcpServers": {
-            "voxvault": {
-                "command": executavel,
-                "args": ["mcp"]
-            }
-        }
-    }))
-    .unwrap_or_default()
+pub fn mcp_estado() -> Resposta<String> {
+    cli::mcp_status().map_err(Falha::from)
+}
+
+#[tauri::command]
+pub fn mcp_registrar() -> Resposta<String> {
+    cli::mcp_apply().map_err(Falha::from)
 }
 
 // -- closing ---------------------------------------------------------------

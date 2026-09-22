@@ -8,10 +8,11 @@
 //! progress -- belongs to the resident service's push channel, never here.
 //!
 //! The second rule is that this module only consumes JSON the core produces on
-//! purpose. Where a command has no `--json` yet, it returns [`CoreError::NoJsonFlag`]
-//! naming the flag, and the interface says so. Scraping the human-readable
-//! output would give the app a second, silently drifting copy of the core's
-//! vocabulary, which is the failure the project's own design forbids.
+//! purpose. It never scrapes human-readable output: that would give the app a
+//! second, silently drifting copy of the core's vocabulary, which the project's
+//! own design forbids. Where a command prints prose rather than JSON -- `import`,
+//! `rename`, `remove-audio`, `mcp` -- the app forwards that prose to the user
+//! verbatim instead of trying to interpret it.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -37,12 +38,6 @@ pub enum CoreError {
     Falha { codigo: i32, detalhe: String },
     /// The command succeeded but did not produce the JSON shape expected.
     Resposta { detalhe: String },
-    /// The command exists but has no machine-readable output yet.
-    SemJson {
-        comando: String,
-        sinalizador: String,
-        detalhe: String,
-    },
 }
 
 impl CoreError {
@@ -54,25 +49,6 @@ impl CoreError {
             }
             CoreError::Falha { detalhe, .. } => detalhe.clone(),
             CoreError::Resposta { detalhe } => detalhe.clone(),
-            CoreError::SemJson { detalhe, .. } => detalhe.clone(),
-        }
-    }
-
-    /// Declares that a command the app needs has no machine-readable output.
-    ///
-    /// Stated as data rather than as a thrown string so the interface can show
-    /// the exact flag the core still has to grow, instead of an apology.
-    pub fn sem_json(comando: &str, sinalizador: &str) -> Self {
-        CoreError::SemJson {
-            comando: comando.to_string(),
-            sinalizador: sinalizador.to_string(),
-            detalhe: format!(
-                "O comando `voxvault {comando}` ainda não tem saída legível por \
-                 máquina. Esta tela passa a funcionar assim que o núcleo publicar \
-                 `{sinalizador}`. Até lá o aplicativo não interpreta o texto humano \
-                 do comando, para não carregar uma cópia divergente do vocabulário \
-                 do núcleo."
-            ),
         }
     }
 }
@@ -190,10 +166,66 @@ pub fn probe(timeout: Duration) -> CoreResult<()> {
 
 // -- the commands the app actually uses -----------------------------------
 
-/// `voxvault show <uid> --json` -- the one read path the core already exposes
-/// in machine-readable form.
+/// `voxvault show <uid> --json`.
 pub fn show(uid: &str) -> CoreResult<serde_json::Value> {
     run_json(&["show", uid, "--json"])
+}
+
+/// `voxvault list --json` -- the authority on what exists and on what state
+/// each meeting is in.
+///
+/// It reports availability and attempt separately (`transcricao_disponivel`
+/// against `estado_da_tentativa`), which is what lets the interface show a
+/// meeting being reprocessed as still readable, and a failed one as failed
+/// rather than as perpetually queued.
+pub fn list(limit: u32) -> CoreResult<serde_json::Value> {
+    let limite = limit.to_string();
+    run_json(&["list", "--json", "-n", &limite])
+}
+
+/// `voxvault search --json --scope ...`.
+pub fn search(termo: &str, escopo: &str, limite: u32) -> CoreResult<serde_json::Value> {
+    let n = limite.to_string();
+    run_json(&["search", "--json", "--scope", escopo, termo, "-n", &n])
+}
+
+pub fn doctor() -> CoreResult<serde_json::Value> {
+    // Exit code 1 means "a prerequisite failed", which is a result and not an
+    // error: the report it prints is exactly what the settings screen shows.
+    match run_json(&["doctor", "--json"]) {
+        Ok(valor) => Ok(valor),
+        Err(CoreError::Falha { detalhe, .. }) => {
+            serde_json::from_str(&detalhe).map_err(|_| CoreError::Falha {
+                codigo: 1,
+                detalhe,
+            })
+        }
+        Err(outro) => Err(outro),
+    }
+}
+
+pub fn devices() -> CoreResult<serde_json::Value> {
+    run_json(&["devices", "--json"])
+}
+
+pub fn config_read() -> CoreResult<serde_json::Value> {
+    run_json(&["config", "--json"])
+}
+
+pub fn rename(uid: &str, titulo: &str) -> CoreResult<String> {
+    run(&["rename", uid, "--title", titulo])
+}
+
+/// `voxvault remove-audio <uid>`.
+///
+/// Without `--yes` the core only describes what it would do, which is what the
+/// interface shows inside the confirmation before anything is destroyed.
+pub fn remove_audio(uid: &str, confirmado: bool) -> CoreResult<String> {
+    if confirmado {
+        run(&["remove-audio", uid, "--yes"])
+    } else {
+        run(&["remove-audio", uid])
+    }
 }
 
 /// `voxvault import <file>`; the core prints a confirmation, not JSON, so the
@@ -221,6 +253,39 @@ pub fn export(uid: &str) -> CoreResult<Vec<String>> {
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect())
+}
+
+// Notes: the write paths exist on the command line and each of them ends by
+// regenerating the meeting's exports, which is what makes a note written here
+// readable from `transcricao.json` immediately afterwards. Reading therefore
+// goes through the export, not through a second listing command.
+
+pub fn notes_add(uid: &str, tipo: &str, conteudo: &str) -> CoreResult<String> {
+    run(&["notes", "add", uid, "--type", tipo, "--content", conteudo])
+}
+
+pub fn notes_update(id: &str, conteudo: &str) -> CoreResult<String> {
+    run(&["notes", "update", id, "--content", conteudo])
+}
+
+pub fn notes_remove(id: &str) -> CoreResult<String> {
+    run(&["notes", "remove", id])
+}
+
+/// `voxvault mcp` -- the core's own report on whether the MCP server is
+/// registered in each agent client, plus the snippet to add.
+///
+/// Presented to the user verbatim. Building the snippet in the app would mean
+/// maintaining a second copy of how the server is launched, and a snippet that
+/// drifts from the core's is worse than none: it fails at the client, not here.
+pub fn mcp_status() -> CoreResult<String> {
+    run(&["mcp"])
+}
+
+/// `voxvault mcp --apply` -- writes the registration, after copying the client's
+/// current configuration file.
+pub fn mcp_apply() -> CoreResult<String> {
+    run(&["mcp", "--apply"])
 }
 
 /// `voxvault config CAMPO=VALOR ...` -- writes the shared configuration file,

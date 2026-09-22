@@ -1,23 +1,46 @@
 <script lang="ts">
   // The library: finding a meeting again, and reading it.
   //
-  // The refresh policy is a budget decision. The list re-reads itself only when
-  // something is actually being processed, never while a recording is running,
-  // and never while the window is hidden. A list that polls on a timer for an
-  // hour is precisely the kind of idle cost this product exists to avoid.
-  import { buscar, comoFalha, reunioesListar, type Falha, type Resumo } from "../lib/api";
-  import { biblioteca, navegacao, shell } from "../lib/estado.svelte";
-  import { dataCurta, duracao, ROTULO_ORIGEM, ROTULO_SITUACAO } from "../lib/format";
+  // The list is the core's answer, not a reconstruction. It reports whether a
+  // transcript is available and what the current attempt is doing as two
+  // separate attributes, so a failed transcription is shown as failed and a
+  // meeting being reprocessed is shown as still readable -- neither of which a
+  // single status string could express.
+  //
+  // The refresh policy is a budget decision: the list re-reads itself only
+  // while something is actually being processed, never during a recording, and
+  // never while the window is hidden.
+  import {
+    buscar,
+    comoFalha,
+    reunioesListar,
+    type EscopoDeBusca,
+    type Falha,
+    type ResultadoDeBusca,
+    type Resumo,
+  } from "../lib/api";
+  import { biblioteca, navegacao, recado, shell } from "../lib/estado.svelte";
+  import { carimbo, dataCurta, duracao, ROTULO_ORIGEM, ROTULO_SITUACAO, tomDaSituacao } from "../lib/format";
   import Pendencia from "../lib/components/Pendencia.svelte";
   import Reuniao from "./Reuniao.svelte";
 
   const INTERVALO_DE_ATUALIZACAO_MS = 5000;
 
   let termoDeBusca = $state("");
+  let escopo = $state<EscopoDeBusca>("ambos");
+  let resultados = $state<ResultadoDeBusca[] | null>(null);
   let falhaDaBusca = $state<Falha | null>(null);
+  let falhaDaLista = $state<Falha | null>(null);
   let buscando = $state(false);
 
   const gravacaoAtiva = $derived(shell.servico?.saude?.gravacao_ativa ?? false);
+
+  const porUid = $derived(
+    new Map(biblioteca.reunioes.map((r: Resumo) => [r.uid, r])),
+  );
+  const aberta = $derived(
+    navegacao.reuniaoAberta ? (porUid.get(navegacao.reuniaoAberta) ?? null) : null,
+  );
 
   const visiveis = $derived.by(() => {
     const termo = biblioteca.filtroTermo.trim().toLowerCase();
@@ -38,13 +61,18 @@
   });
 
   const emProcessamento = $derived(
-    biblioteca.reunioes.some((r) => r.situacao === "na_fila" || r.situacao === "gravando"),
+    biblioteca.reunioes.some(
+      (r) => r.situacao === "na_fila" || r.situacao === "transcrevendo" || r.situacao === "gravando",
+    ),
   );
 
-  async function carregar() {
+  export async function carregar() {
     biblioteca.carregando = true;
     try {
       biblioteca.reunioes = await reunioesListar();
+      falhaDaLista = null;
+    } catch (erro) {
+      falhaDaLista = comoFalha(erro);
     } finally {
       biblioteca.carregando = false;
     }
@@ -66,11 +94,16 @@
 
   async function executarBusca(evento: Event) {
     evento.preventDefault();
-    if (!termoDeBusca.trim()) return;
+    if (!termoDeBusca.trim()) {
+      resultados = null;
+      return;
+    }
     buscando = true;
     falhaDaBusca = null;
     try {
-      await buscar(termoDeBusca.trim());
+      const resposta = await buscar(termoDeBusca.trim(), escopo);
+      resultados = resposta.resultados;
+      if (resultados.length === 0) recado("info", "Nada encontrado para esse termo.");
     } catch (erro) {
       falhaDaBusca = comoFalha(erro);
     } finally {
@@ -78,9 +111,18 @@
     }
   }
 
-  function abrir(uid: string) {
+  function abrir(uid: string, focoMs: number | null = null) {
     navegacao.reuniaoAberta = uid;
-    navegacao.focoMs = null;
+    navegacao.focoMs = focoMs;
+  }
+
+  /** Opening a search result positions the reading view at the hit. A note hit
+   *  has no instant, so it opens the meeting without pretending to have one. */
+  function abrirResultado(resultado: ResultadoDeBusca) {
+    abrir(resultado.reuniao, resultado.inicio_ms ?? null);
+    if (resultado.natureza === "nota") {
+      recado("info", "A nota está na área de notas, abaixo da linha do tempo.");
+    }
   }
 </script>
 
@@ -95,34 +137,87 @@
           disabled={buscando}
         />
       </form>
-      <input type="text" placeholder="Filtrar por título" bind:value={biblioteca.filtroTermo} />
-      <select bind:value={biblioteca.filtroSituacao} aria-label="Filtrar por estado">
-        <option value="todas">Todos os estados</option>
-        <option value="pronta">Pronta</option>
-        <option value="na_fila">Aguardando transcrição</option>
-        <option value="gravando">Gravando</option>
-        <option value="incompleta">Finalização incompleta</option>
-      </select>
-      <div class="linha" style="gap:6px">
-        <input type="date" bind:value={biblioteca.filtroDe} aria-label="De" style="flex:1" />
-        <input type="date" bind:value={biblioteca.filtroAte} aria-label="Até" style="flex:1" />
+      <div class="trilha-escolha">
+        {#each [["ambos", "Tudo"], ["transcricoes", "Transcrições"], ["notas", "Notas"]] as [valor, rotulo] (valor)}
+          <button
+            type="button"
+            aria-pressed={escopo === valor}
+            onclick={() => {
+              escopo = valor as EscopoDeBusca;
+              if (termoDeBusca.trim()) void executarBusca(new Event("submit"));
+            }}>{rotulo}</button
+          >
+        {/each}
       </div>
-      <div class="linha" style="justify-content:space-between">
-        <span class="legenda">{visiveis.length} reunião(ões)</span>
-        <button class="botao discreto" onclick={carregar} disabled={biblioteca.carregando}>
-          Atualizar
-        </button>
-      </div>
+
+      {#if resultados === null}
+        <input type="text" placeholder="Filtrar por título" bind:value={biblioteca.filtroTermo} />
+        <select bind:value={biblioteca.filtroSituacao} aria-label="Filtrar por estado">
+          <option value="todas">Todos os estados</option>
+          <option value="pronta">Pronta</option>
+          <option value="na_fila">Aguardando transcrição</option>
+          <option value="transcrevendo">Transcrevendo</option>
+          <option value="falhou">Falhou</option>
+          <option value="gravando">Gravando</option>
+          <option value="incompleta">Finalização incompleta</option>
+        </select>
+        <div class="linha" style="gap:6px">
+          <input type="date" bind:value={biblioteca.filtroDe} aria-label="De" style="flex:1" />
+          <input type="date" bind:value={biblioteca.filtroAte} aria-label="Até" style="flex:1" />
+        </div>
+      {:else}
+        <div class="linha" style="justify-content:space-between">
+          <span class="legenda">{resultados.length} resultado(s)</span>
+          <button
+            class="botao discreto"
+            onclick={() => {
+              resultados = null;
+              termoDeBusca = "";
+            }}>Voltar à lista</button
+          >
+        </div>
+      {/if}
+
+      {#if resultados === null}
+        <div class="linha" style="justify-content:space-between">
+          <span class="legenda">{visiveis.length} reunião(ões)</span>
+          <button class="botao discreto" onclick={carregar} disabled={biblioteca.carregando}>
+            Atualizar
+          </button>
+        </div>
+      {/if}
     </div>
 
     <div class="lista">
       {#if falhaDaBusca}
-        <div style="padding:12px">
-          <Pendencia falha={falhaDaBusca} titulo="Busca indisponível" />
-        </div>
+        <div style="padding:12px"><Pendencia falha={falhaDaBusca} titulo="Busca indisponível" /></div>
+      {/if}
+      {#if falhaDaLista}
+        <div style="padding:12px"><Pendencia falha={falhaDaLista} titulo="Lista indisponível" /></div>
       {/if}
 
-      {#if biblioteca.carregando && biblioteca.reunioes.length === 0}
+      {#if resultados !== null}
+        {#if resultados.length === 0}
+          <div class="vazio">Nenhum resultado.</div>
+        {:else}
+          {#each resultados as r, i (`${r.reuniao}-${r.nota ?? r.inicio_ms ?? i}`)}
+            <button class="item" onclick={() => abrirResultado(r)}>
+              <div class="titulo">{r.titulo}</div>
+              <div class="meta" style="margin-bottom:4px">
+                {#if r.natureza === "nota"}
+                  <span class="selo acento">nota{r.tipo ? ` · ${r.tipo}` : ""}</span>
+                {:else}
+                  <span class="selo">transcrição</span>
+                  {#if r.inicio_ms !== undefined}
+                    <span class="mono">{carimbo(r.inicio_ms)}</span>
+                  {/if}
+                {/if}
+              </div>
+              <div style="font-size:12.5px;color:var(--texto-suave)">{r.recorte}</div>
+            </button>
+          {/each}
+        {/if}
+      {:else if biblioteca.carregando && biblioteca.reunioes.length === 0}
         <div class="vazio">Carregando...</div>
       {:else if visiveis.length === 0}
         <div class="vazio">
@@ -141,9 +236,15 @@
             <div class="meta">
               <span>{dataCurta(r.inicio)}</span>
               <span>{duracao(r.duracao_ms)}</span>
-              <span class={`selo ${r.situacao === "pronta" ? "ok" : r.situacao === "incompleta" ? "erro" : "acento"}`}>
+              <span class={`selo ${tomDaSituacao(r.situacao)}`}>
                 {ROTULO_SITUACAO[r.situacao] ?? r.situacao}
               </span>
+              <!-- Availability is shown alongside the attempt, never folded
+                   into it: a meeting being reprocessed is readable right now. -->
+              {#if r.transcricao_disponivel && r.situacao !== "pronta"}
+                <span class="selo ok">transcrição legível</span>
+              {/if}
+              {#if r.completude === "parcial"}<span class="selo alerta">parcial</span>{/if}
               <span class="selo">{ROTULO_ORIGEM[r.origem] ?? r.origem}</span>
               {#if r.tem_notas}<span class="selo acento">notas</span>{/if}
               {#if r.avisos.length > 0}
@@ -151,6 +252,11 @@
               {/if}
               {#if !r.tem_audio}<span class="selo">sem áudio</span>{/if}
             </div>
+            {#if r.motivo_da_falha}
+              <div class="legenda" style="margin-top:4px;color:var(--gravando)">
+                {r.motivo_da_falha}
+              </div>
+            {/if}
           </button>
         {/each}
       {/if}
@@ -158,8 +264,12 @@
   </div>
 
   <div class="painel-leitura">
-    {#if navegacao.reuniaoAberta}
-      <Reuniao uid={navegacao.reuniaoAberta} focoMs={navegacao.focoMs} />
+    {#if aberta}
+      <Reuniao resumo={aberta} focoMs={navegacao.focoMs} onMudou={carregar} />
+    {:else if navegacao.reuniaoAberta}
+      <div class="vazio">
+        Esta reunião não está mais na lista. Atualize para recarregar.
+      </div>
     {:else}
       <div class="vazio">Escolha uma reunião na lista para ler a transcrição.</div>
     {/if}

@@ -29,12 +29,25 @@
     registrarNivel,
     shell,
     zerarGravacao,
+    type EstadoDaGravacao,
   } from "../lib/estado.svelte";
   import { carimbo } from "../lib/format";
   import Medidor from "../lib/components/Medidor.svelte";
   import Pendencia from "../lib/components/Pendencia.svelte";
 
   const servicoPronto = $derived(shell.servico?.estado === "conectado");
+
+  // Detection suggests; it never acts. Starting a recording because an
+  // application opened would capture things nobody agreed to record, and the
+  // one thing this product cannot afford is to be surprising about that.
+  const deteccao = $derived(shell.servico?.deteccao?.deteccao ?? null);
+  let sugestaoDispensada = $state<string | null>(null);
+  const sugestaoVisivel = $derived(
+    !!deteccao &&
+      gravacao.estado === "ocioso" &&
+      servicoPronto &&
+      sugestaoDispensada !== deteccao.aplicativo,
+  );
   const causaIndisponivel = $derived(
     shell.servico?.detalhe ?? "O estado do serviço local ainda não foi verificado.",
   );
@@ -51,6 +64,25 @@
   // cap is applied in `registrarNivel`, on arrival.
   $effect(() => {
     const assinaturas = [
+      // The service is the authority on the recording's state, not this window.
+      // A recording started from the command line therefore arrives here as a
+      // pushed state and appears as active -- it is the same recording, of the
+      // same owner.
+      listen<{ estado: EstadoDaGravacao; decorrido_ms?: number; titulo?: string; uid?: string }>(
+        "gravacao://estado",
+        (evento) => {
+          const { estado, decorrido_ms, titulo, uid } = evento.payload;
+          gravacao.estado = estado;
+          if (titulo) gravacao.titulo = titulo;
+          if (uid) gravacao.uid = uid;
+          if (estado === "gravando") iniciarRelogio(decorrido_ms ?? gravacao.decorridoMs);
+          else if (estado === "pausado") pausarRelogio();
+          else {
+            pararRelogio();
+            zerarGravacao();
+          }
+        },
+      ),
       listen<{ trilha: "mic" | "system"; nivel: number }>("gravacao://nivel", (evento) => {
         registrarNivel(evento.payload.trilha, evento.payload.nivel);
       }),
@@ -81,6 +113,81 @@
     return () => {
       for (const assinatura of assinaturas) assinatura.then((cancelar) => cancelar());
     };
+  });
+
+  // -- the service's view of the recording -----------------------------------
+  //
+  // The service owns the recording; this window only reflects it. The state is
+  // therefore taken from the polled snapshot rather than from what this window
+  // believes it did -- which is also what makes a recording started from the
+  // command line appear here as active.
+  let duracoesAnteriores: Record<string, number> = {};
+
+  $effect(() => {
+    const vista = shell.servico?.gravacao;
+    if (shell.servico?.estado !== "conectado" || !vista) return;
+
+    const estado: EstadoDaGravacao = !vista.ativa
+      ? "ocioso"
+      : vista.pausada
+        ? "pausado"
+        : "gravando";
+
+    if (estado !== gravacao.estado) {
+      gravacao.estado = estado;
+      if (estado === "gravando") iniciarRelogio(vista.duracao_ms);
+      else if (estado === "pausado") pausarRelogio();
+      else {
+        pararRelogio();
+        zerarGravacao();
+        duracoesAnteriores = {};
+        return;
+      }
+    }
+
+    if (vista.ativa) {
+      gravacao.uid = vista.uid || null;
+      if (vista.titulo) gravacao.titulo = vista.titulo;
+
+      // Levels arrive with the poll, and the peak is reset by the read, so the
+      // rate here is this app's polling rate -- one sample every two seconds,
+      // far below the twenty per second the requirement allows.
+      for (const [trilha, medida] of Object.entries(vista.niveis ?? {})) {
+        if (trilha === "mic" || trilha === "system") {
+          registrarNivel(trilha, medida.pico);
+          gravacao.trilhas[trilha].silencioHaS = medida.silencio_ha_s;
+        }
+      }
+
+      // A track that stopped capturing stops accumulating milliseconds. That
+      // is the honest signal available: the service reports what each track
+      // has written, and a track whose figure froze while the other grew is
+      // the one that died.
+      for (const trilha of ["mic", "system"] as const) {
+        const escrito = vista.trilhas?.[trilha];
+        const presente = escrito !== undefined;
+        const anterior = duracoesAnteriores[trilha];
+        const parou =
+          presente &&
+          estado === "gravando" &&
+          anterior !== undefined &&
+          escrito === anterior;
+        gravacao.trilhas[trilha].capturando = presente && !parou;
+        gravacao.trilhas[trilha].motivo = parou
+          ? "Esta trilha parou de crescer: o dispositivo dela provavelmente foi perdido. A outra continua gravando."
+          : presente
+            ? null
+            : "Esta trilha não foi aberta nesta gravação.";
+        if (presente) duracoesAnteriores[trilha] = escrito;
+      }
+
+      for (const aviso of vista.avisos ?? []) {
+        if (!gravacao.avisos.some((existente) => existente.texto === aviso)) {
+          registrarAviso(aviso);
+          recado("info", aviso);
+        }
+      }
+    }
   });
 
   // -- drag and drop ---------------------------------------------------------
@@ -199,6 +306,36 @@
       </div>
     {/if}
 
+    {#if sugestaoVisivel && deteccao}
+      <div class="nota acento">
+        <div class="linha" style="justify-content:space-between;align-items:flex-start">
+          <div>
+            <strong>Parece que uma reunião começou</strong>
+            <p style="margin:0">
+              {deteccao.aplicativo} está usando o microfone há
+              {Math.round(deteccao.sustentado_ha_s)} s ({deteccao.sinal}).
+              {#if deteccao.fraco}
+                O sinal é fraco: um navegador não diz o que está fazendo, então
+                pode não ser uma reunião.
+              {/if}
+            </p>
+            <p class="legenda" style="margin:6px 0 0">
+              Nada foi gravado. O VoxVault nunca começa uma gravação sozinho.
+            </p>
+          </div>
+          <div class="linha">
+            <button
+              class="botao discreto"
+              onclick={() => (sugestaoDispensada = deteccao.aplicativo)}>Agora não</button
+            >
+            <button class="botao perigo" onclick={iniciar} disabled={ocupado}>
+              Gravar
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
     <!-- Recording control -->
     <div class="cartao">
       <header>
@@ -263,7 +400,10 @@
     <div class="cartao">
       <header>
         <h2>Trilhas</h2>
-        <span class="legenda">Atualização limitada a 20 vezes por segundo por trilha</span>
+        <span class="legenda">
+          O pico é zerado a cada leitura, então a taxa é a da consulta — bem
+          abaixo do teto de 20 por segundo por trilha
+        </span>
       </header>
       <div class="grade-dupla">
         <Medidor
@@ -271,12 +411,16 @@
           nivel={gravacao.trilhas.mic.nivel}
           capturando={gravacao.trilhas.mic.capturando}
           motivo={gravacao.trilhas.mic.motivo}
+          disponivel={gravacao.niveisVivos}
+          silencioHaS={gravacao.trilhas.mic.silencioHaS}
         />
         <Medidor
           rotulo="Sistema — o que sai pela saída"
           nivel={gravacao.trilhas.system.nivel}
           capturando={gravacao.trilhas.system.capturando}
           motivo={gravacao.trilhas.system.motivo}
+          disponivel={gravacao.niveisVivos}
+          silencioHaS={gravacao.trilhas.system.silencioHaS}
         />
       </div>
       {#if ocioso}
@@ -284,6 +428,15 @@
           Os níveis aparecem durante a gravação. Eles vêm do mesmo ponto em que o
           áudio já é processado pela captura — a interface não processa áudio.
         </p>
+      {:else if !gravacao.niveisVivos}
+        <div class="nota alerta" style="margin-top:12px">
+          <strong>Sem medição de nível</strong>
+          <p style="margin:0">
+            Nenhuma medição chegou nos últimos segundos. O indicador de captura
+            acima continua valendo: ele vem do que cada trilha já escreveu em
+            disco.
+          </p>
+        </div>
       {/if}
     </div>
 

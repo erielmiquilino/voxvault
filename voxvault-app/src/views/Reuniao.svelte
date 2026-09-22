@@ -14,29 +14,72 @@
     reuniaoExportar,
     reuniaoRemoverAudio,
     reuniaoRenomear,
+    reuniaoRemoverAudioPrevia,
     reuniaoReprocessar,
-    notasListar,
+    notaAlterar,
+    notaCriar,
+    notaRemover,
     type Detalhe,
     type Falha,
+    type Resumo,
+    type TipoDeNota,
   } from "../lib/api";
   import { recado, shell } from "../lib/estado.svelte";
-  import { carimbo, dataHora, duracao, falante, papelDoFalante, ROTULO_ORIGEM, ROTULO_SITUACAO } from "../lib/format";
+  import {
+    carimbo,
+    dataHora,
+    duracao,
+    falante,
+    papelDoFalante,
+    ROTULO_ORIGEM,
+    ROTULO_SITUACAO,
+    tomDaSituacao,
+  } from "../lib/format";
   import Confirmacao from "../lib/components/Confirmacao.svelte";
   import Pendencia from "../lib/components/Pendencia.svelte";
 
-  let { uid, focoMs = null }: { uid: string; focoMs?: number | null } = $props();
+  // The summary is handed in rather than re-derived: the list already holds the
+  // core's authoritative answer, and a second derivation here would be a weaker
+  // copy of the same state one screen away.
+  let {
+    resumo,
+    focoMs = null,
+    onMudou,
+  }: {
+    resumo: Resumo;
+    focoMs?: number | null;
+    onMudou: () => void | Promise<void>;
+  } = $props();
+
+  const uid = $derived(resumo.uid);
 
   let detalhe = $state<Detalhe | null>(null);
   let falha = $state<Falha | null>(null);
-  let falhaNotas = $state<Falha | null>(null);
   let carregando = $state(false);
+
+  const TIPOS_DE_NOTA: { valor: TipoDeNota; rotulo: string }[] = [
+    { valor: "resumo", rotulo: "Resumo" },
+    { valor: "decisoes", rotulo: "Decisões" },
+    { valor: "pendencias", rotulo: "Pendências" },
+    { valor: "livre", rotulo: "Livre" },
+  ];
+
+  let novaNotaTipo = $state<TipoDeNota>("livre");
+  let novaNotaTexto = $state("");
+  let notaEmEdicao = $state<string | null>(null);
+  let textoEmEdicao = $state("");
 
   let trilhaEscolhida = $state<"mic" | "system" | "ambas">("ambas");
   let posicaoMs = $state(0);
   let tocando = $state(false);
   let elementos = $state<Record<string, HTMLAudioElement | null>>({});
   let selecionados = $state<number[]>([]);
-  let confirmacao = $state<null | { titulo: string; corpo: string; ao: () => void }>(null);
+  let confirmacao = $state<null | {
+    titulo: string;
+    corpo: string;
+    rotulo: string;
+    ao: () => void;
+  }>(null);
   let renomeando = $state(false);
   let novoTitulo = $state("");
 
@@ -72,10 +115,10 @@
   });
 
   $effect(() => {
-    void carregar(uid);
+    void carregar();
   });
 
-  async function carregar(alvo: string) {
+  async function carregar() {
     carregando = true;
     falha = null;
     detalhe = null;
@@ -83,20 +126,50 @@
     posicaoMs = 0;
     tocando = false;
     try {
-      detalhe = await reuniaoDetalhar(alvo);
-      novoTitulo = detalhe.resumo.titulo;
-      trilhaEscolhida = detalhe.trilhas.length > 1 ? "ambas" : ((detalhe.trilhas[0]?.nome as "mic" | "system") ?? "ambas");
+      detalhe = await reuniaoDetalhar(
+        resumo.uid,
+        resumo.diretorio,
+        resumo.revisao_ativa || null,
+      );
+      novoTitulo = resumo.titulo;
+      trilhaEscolhida =
+        detalhe.trilhas.length > 1
+          ? "ambas"
+          : ((detalhe.trilhas[0]?.nome as "mic" | "system") ?? "ambas");
     } catch (erro) {
       falha = comoFalha(erro);
     } finally {
       carregando = false;
     }
-    try {
-      await notasListar(alvo);
-      falhaNotas = null;
-    } catch (erro) {
-      falhaNotas = comoFalha(erro);
-    }
+  }
+
+  async function criarNota() {
+    if (!novaNotaTexto.trim()) return;
+    await executar(
+      () => notaCriar(uid, novaNotaTipo, novaNotaTexto.trim()),
+      "Nota gravada com autoria de usuário.",
+    );
+    novaNotaTexto = "";
+  }
+
+  async function salvarEdicao(id: string) {
+    if (!textoEmEdicao.trim()) return;
+    await executar(() => notaAlterar(id, textoEmEdicao.trim()), "Nota alterada.");
+    notaEmEdicao = null;
+  }
+
+  function pedirRemocaoDeNota(id: string, tipo: string) {
+    confirmacao = {
+      titulo: "Remover esta nota?",
+      corpo:
+        `A nota do tipo "${tipo}" será apagada em definitivo. A transcrição da ` +
+        "reunião não é afetada: nota e linha do tempo são coisas separadas.",
+      rotulo: "Remover a nota",
+      ao: () => {
+        confirmacao = null;
+        void executar(() => notaRemover(id), "Nota removida.");
+      },
+    };
   }
 
   // Position the reading view at a specific moment, which is what a search
@@ -168,19 +241,31 @@
     try {
       await acao();
       recado("ok", sucesso);
-      await carregar(uid);
+      await carregar();
+      // The summary lives in the list, so anything that changes it has to make
+      // the list re-ask the core rather than patching a local copy.
+      await onMudou();
     } catch (erro) {
-      const f = comoFalha(erro);
-      recado("erro", f.mensagem);
+      recado("erro", comoFalha(erro).mensagem);
     }
   }
 
-  function pedirRemocaoDeAudio() {
+  /// The confirmation quotes the core's own dry run, so what the user reads is
+  /// exactly what the core is about to do -- including its refusal to remove
+  /// audio from a meeting that has no transcript, where removing it would erase
+  /// the meeting entirely.
+  async function pedirRemocaoDeAudio() {
+    let previa: string;
+    try {
+      previa = await reuniaoRemoverAudioPrevia(uid);
+    } catch (erro) {
+      recado("erro", comoFalha(erro).mensagem);
+      return;
+    }
     confirmacao = {
       titulo: "Remover o áudio desta reunião?",
-      corpo:
-        "Os arquivos de áudio serão apagados do disco em definitivo. A transcrição já produzida continua legível e pesquisável.\n\n" +
-        "Depois disso a reunião não poderá mais ser reprocessada: reprocessar exige o áudio original, e ele não existirá mais.",
+      corpo: previa.trim(),
+      rotulo: "Remover o áudio",
       ao: () => {
         confirmacao = null;
         void executar(() => reuniaoRemoverAudio(uid), "Áudio removido.");
@@ -194,7 +279,7 @@
 {:else if falha}
   <Pendencia {falha} titulo="Não foi possível abrir a reunião" />
 {:else if detalhe}
-  {@const r = detalhe.resumo}
+  {@const r = resumo}
 
   <header style="margin-bottom:16px">
     {#if renomeando}
@@ -221,11 +306,27 @@
       <span>{duracao(r.duracao_ms)}</span>
       <span>·</span>
       <span class="selo">{ROTULO_ORIGEM[r.origem] ?? r.origem}</span>
-      <span class={`selo ${r.situacao === "pronta" ? "ok" : r.situacao === "incompleta" ? "erro" : "acento"}`}>
+      <span class={`selo ${tomDaSituacao(r.situacao)}`}>
         {ROTULO_SITUACAO[r.situacao] ?? r.situacao}
       </span>
+      {#if r.transcricao_disponivel && r.situacao !== "pronta"}
+        <span class="selo ok">transcrição legível</span>
+      {/if}
+      {#if r.completude === "parcial"}<span class="selo alerta">parcial</span>{/if}
       {#if r.motor}<span class="selo">{r.motor}</span>{/if}
     </div>
+
+    {#if r.motivo_da_falha}
+      <div class="nota erro" style="margin-top:10px">
+        <strong>A transcrição falhou</strong>
+        <p style="margin:0">{r.motivo_da_falha}</p>
+        {#if r.tem_audio}
+          <p class="legenda" style="margin:6px 0 0">
+            O áudio continua no disco, então reprocessar é possível.
+          </p>
+        {/if}
+      </div>
+    {/if}
 
     <div class="linha" style="margin-top:12px">
       <button class="botao discreto" onclick={() => (renomeando = true)}>Renomear</button>
@@ -241,13 +342,15 @@
       </button>
       <button
         class="botao discreto"
-        disabled={r.situacao !== "pronta"}
-        title={r.situacao === "pronta" ? "" : "A reunião ainda não tem transcrição publicada."}
+        disabled={!r.transcricao_disponivel}
+        title={r.transcricao_disponivel
+          ? ""
+          : "A reunião ainda não tem transcrição publicada, então não há o que exportar."}
         onclick={() => executar(() => reuniaoExportar(uid), "Exportações regeneradas.")}
       >
         Exportar
       </button>
-      <button class="botao discreto" onclick={() => reuniaoAbrirPasta(uid)}>
+      <button class="botao discreto" onclick={() => reuniaoAbrirPasta(resumo.diretorio)}>
         Abrir a pasta
       </button>
       <button class="botao discreto" disabled={!r.tem_audio} onclick={pedirRemocaoDeAudio}>
@@ -335,11 +438,21 @@
     {#if detalhe.segmentos.length === 0}
       <div class="vazio">
         {#if r.situacao === "na_fila"}
-          Esta reunião ainda está aguardando transcrição. O texto aparece aqui
-          quando a fila chegar nela.
+          Esta reunião está aguardando transcrição. O texto aparece aqui quando a
+          fila chegar nela.
+        {:else if r.situacao === "transcrevendo"}
+          Esta reunião está sendo transcrita agora. O texto aparece aqui quando a
+          revisão for publicada.
+        {:else if r.situacao === "falhou"}
+          A transcrição desta reunião falhou; o motivo está acima.
         {:else if r.situacao === "incompleta"}
           A finalização desta gravação não chegou ao fim, então não há
           transcrição publicada.
+        {:else if r.transcricao_disponivel}
+          <!-- A published revision with no segments is not a missing
+               transcription: it is a transcription that found no speech. -->
+          A transcrição foi concluída e não encontrou fala nenhuma. O áudio
+          existe, mas o filtro de voz não reconheceu nada dentro dele.
         {:else}
           Nenhum segmento transcrito.
         {/if}
@@ -379,12 +492,77 @@
 
   <!-- Notes: own area, never interleaved with the timeline -->
   <section>
-    <h2 style="margin-bottom:8px">Notas</h2>
-    {#if falhaNotas}
-      <Pendencia falha={falhaNotas} titulo="Notas ainda não disponíveis" />
-    {:else}
+    <div class="linha" style="justify-content:space-between;margin-bottom:8px">
+      <h2>Notas</h2>
+      <span class="legenda">Interpretação, não transcrição — área separada de propósito</span>
+    </div>
+
+    {#if detalhe.notas.length === 0}
       <div class="vazio">Esta reunião não tem notas.</div>
+    {:else}
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+        {#each detalhe.notas as nota (nota.uid)}
+          <article class="cartao" style="padding:13px">
+            <div class="linha" style="justify-content:space-between;margin-bottom:6px">
+              <div class="linha">
+                <span class="selo acento">{nota.tipo}</span>
+                <span class="legenda">
+                  {nota.autoria_tipo === "agente"
+                    ? `agente${nota.autoria_cliente ? `: ${nota.autoria_cliente}` : ""}`
+                    : "você"}
+                </span>
+                <span class="legenda">· criada em {dataHora(nota.criada_em)}</span>
+                {#if nota.alterada_em && nota.alterada_em !== nota.criada_em}
+                  <span class="legenda">· alterada em {dataHora(nota.alterada_em)}</span>
+                {/if}
+              </div>
+              <div class="linha">
+                <button
+                  class="botao discreto"
+                  onclick={() => {
+                    notaEmEdicao = nota.uid;
+                    textoEmEdicao = nota.conteudo;
+                  }}>Editar</button
+                >
+                <button
+                  class="botao discreto"
+                  onclick={() => pedirRemocaoDeNota(nota.uid, nota.tipo)}>Remover</button
+                >
+              </div>
+            </div>
+
+            {#if notaEmEdicao === nota.uid}
+              <textarea bind:value={textoEmEdicao}></textarea>
+              <div class="linha fim" style="margin-top:8px">
+                <button class="botao" onclick={() => (notaEmEdicao = null)}>Cancelar</button>
+                <button class="botao primario" onclick={() => salvarEdicao(nota.uid)}>
+                  Gravar
+                </button>
+              </div>
+            {:else}
+              <p style="margin:0;white-space:pre-wrap">{nota.conteudo}</p>
+            {/if}
+          </article>
+        {/each}
+      </div>
     {/if}
+
+    <div class="cartao" style="padding:13px">
+      <div class="linha" style="margin-bottom:8px">
+        <select bind:value={novaNotaTipo} style="width:auto" aria-label="Tipo da nota">
+          {#each TIPOS_DE_NOTA as tipo (tipo.valor)}
+            <option value={tipo.valor}>{tipo.rotulo}</option>
+          {/each}
+        </select>
+      </div>
+      <textarea bind:value={novaNotaTexto} placeholder="Escreva uma nota sobre esta reunião"
+      ></textarea>
+      <div class="linha fim" style="margin-top:8px">
+        <button class="botao primario" disabled={!novaNotaTexto.trim()} onclick={criarNota}>
+          Gravar nota
+        </button>
+      </div>
+    </div>
   </section>
 {/if}
 
@@ -392,7 +570,7 @@
   <Confirmacao
     titulo={confirmacao.titulo}
     corpo={confirmacao.corpo}
-    confirmar="Remover o áudio"
+    confirmar={confirmacao.rotulo}
     perigo
     onConfirmar={confirmacao.ao}
     onCancelar={() => (confirmacao = null)}

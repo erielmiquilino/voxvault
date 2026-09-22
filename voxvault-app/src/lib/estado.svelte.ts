@@ -39,6 +39,10 @@ export interface Trilha {
   /** Set when the track stopped for a reason, so the interface can say which
    *  one stopped and that the other continues. */
   motivo: string | null;
+  /** How long this track has been silent. It is what separates "nobody is
+   *  talking right now" from "this track has been recording silence for twenty
+   *  minutes and nobody noticed". */
+  silencioHaS: number;
 }
 
 export const gravacao = $state<{
@@ -49,14 +53,18 @@ export const gravacao = $state<{
   decorridoMs: number;
   trilhas: { mic: Trilha; system: Trilha };
   avisos: { texto: string; em: number; instanteMs: number | null }[];
+  /** Whether level samples are actually arriving. False means nobody is
+   *  publishing them, which the meter must say rather than show a flat bar. */
+  niveisVivos: boolean;
 }>({
   estado: "ocioso",
   titulo: "",
   uid: null,
   decorridoMs: 0,
+  niveisVivos: false,
   trilhas: {
-    mic: { capturando: false, nivel: 0, motivo: null },
-    system: { capturando: false, nivel: 0, motivo: null },
+    mic: { capturando: false, nivel: 0, motivo: null, silencioHaS: 0 },
+    system: { capturando: false, nivel: 0, motivo: null, silencioHaS: 0 },
   },
   avisos: [],
 });
@@ -103,6 +111,14 @@ export function dispensarRecado(id: number) {
 // -- level meters ------------------------------------------------------------
 
 const ultimoNivelEm: Record<string, number> = { mic: 0, system: 0 };
+let expiracaoDeNivel: number | null = null;
+
+/** Levels stop being shown when they stop arriving, rather than freezing at
+ *  the last value -- a frozen bar is a lie about what the microphone is doing.
+ *
+ *  Three polling periods: one missed sample is jitter, three in a row means
+ *  nobody is publishing any more. */
+const VALIDADE_DO_NIVEL_MS = 6500;
 
 /**
  * Accept a level sample for one track, dropping anything above 20 Hz.
@@ -116,6 +132,14 @@ export function registrarNivel(trilha: "mic" | "system", valor: number) {
   if (agora - ultimoNivelEm[trilha] < INTERVALO_MINIMO_DE_NIVEL_MS) return;
   ultimoNivelEm[trilha] = agora;
   gravacao.trilhas[trilha].nivel = Math.max(0, Math.min(1, valor));
+
+  gravacao.niveisVivos = true;
+  if (expiracaoDeNivel !== null) window.clearTimeout(expiracaoDeNivel);
+  expiracaoDeNivel = window.setTimeout(() => {
+    gravacao.niveisVivos = false;
+    gravacao.trilhas.mic.nivel = 0;
+    gravacao.trilhas.system.nivel = 0;
+  }, VALIDADE_DO_NIVEL_MS);
 }
 
 export function registrarAviso(texto: string, instanteMs: number | null = null) {
@@ -131,6 +155,7 @@ export function zerarGravacao() {
     gravacao.trilhas[trilha].capturando = false;
     gravacao.trilhas[trilha].nivel = 0;
     gravacao.trilhas[trilha].motivo = null;
+    gravacao.trilhas[trilha].silencioHaS = 0;
   }
 }
 

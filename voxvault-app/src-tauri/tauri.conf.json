@@ -28,7 +28,7 @@
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["$HOME/**", "D:/**", "E:/**", "C:/**"],
+          "allow": [],
           "deny": []
         }
       }

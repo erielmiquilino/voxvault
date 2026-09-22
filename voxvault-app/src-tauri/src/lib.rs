@@ -14,11 +14,13 @@
 
 mod cli;
 mod commands;
+mod harness;
 mod http;
 mod library;
 mod paths;
 mod service;
 mod system;
+mod tray;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,8 +28,13 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager, WindowEvent};
 
-/// While attached and everything is answering.
+/// While attached and nothing is being recorded.
 const INTERVALO_CONECTADO: Duration = Duration::from_secs(10);
+/// While a recording is running. The service has no push channel yet, so the
+/// recording view is polled -- close enough that a warning reaches the screen
+/// while it still means something, far enough that an hour of meeting costs
+/// eighteen hundred small loopback requests rather than seven thousand.
+const INTERVALO_GRAVANDO: Duration = Duration::from_secs(2);
 /// While looking for the service, or right after losing it.
 const INTERVALO_PROCURANDO: Duration = Duration::from_secs(3);
 /// After the retry budget is spent: the pass is a no-op, so this is only how
@@ -49,6 +56,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(cliente.clone())
         .manage(fechamento_aprovado.clone())
         .invoke_handler(tauri::generate_handler![
@@ -67,11 +75,14 @@ pub fn run() {
             commands::reuniao_reprocessar,
             commands::reuniao_exportar,
             commands::reuniao_renomear,
+            commands::reuniao_remover_audio_previa,
             commands::reuniao_remover_audio,
             commands::reuniao_abrir_pasta,
             commands::abrir_caminho,
             commands::busca,
-            commands::notas_listar,
+            commands::nota_criar,
+            commands::nota_alterar,
+            commands::nota_remover,
             commands::importar,
             commands::diretorio_de_dados,
             commands::diretorio_de_dados_validar,
@@ -81,13 +92,37 @@ pub fn run() {
             commands::dispositivos,
             commands::diagnostico_do_nucleo,
             commands::diagnostico_do_aplicativo,
-            commands::trecho_mcp,
+            commands::mcp_estado,
+            commands::mcp_registrar,
             commands::estado_de_fechamento,
         ])
         .setup({
             let cliente = cliente.clone();
             move |app| {
+                // The player reads a meeting's audio straight from disk, so the
+                // asset protocol is opened for exactly one directory: the
+                // recordings folder of the resolved data directory. The static
+                // scope in the configuration is empty because the path is only
+                // known at run time, and a static scope wide enough to cover it
+                // would be a scope wide enough to cover everything else.
+                let (data_dir, _) = paths::effective_data_dir();
+                let gravacoes = paths::recordings_dir(&data_dir);
+                if let Err(erro) = app
+                    .asset_protocol_scope()
+                    .allow_directory(&gravacoes, true)
+                {
+                    eprintln!(
+                        "não foi possível liberar {} para reprodução: {erro}",
+                        gravacoes.display()
+                    );
+                }
                 supervisionar(app.handle().clone(), cliente.clone());
+                harness::iniciar(app.handle().clone());
+
+                if let Err(erro) = tray::instalar(app.handle(), cliente.clone()) {
+                    eprintln!("bandeja indisponível: {erro}");
+                }
+                registrar_atalho(app.handle().clone(), cliente.clone());
                 Ok(())
             }
         })
@@ -130,6 +165,38 @@ pub fn run() {
         });
 }
 
+/// Register the global shortcut that toggles the recording.
+///
+/// A failure here is reported and not fatal: another application may already
+/// own the combination, and a window that refuses to open because a shortcut
+/// was taken would be a worse tool than one without the shortcut.
+fn registrar_atalho(app: tauri::AppHandle, cliente: service::ServiceClient) {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+    let atalho = tray::atalho();
+    let manipulador = {
+        let cliente = cliente.clone();
+        move |app: &tauri::AppHandle, _atalho: &_, evento: tauri_plugin_global_shortcut::ShortcutEvent| {
+            // Only on release: a held key would otherwise start and stop the
+            // recording repeatedly while the person is still pressing it.
+            if evento.state() == ShortcutState::Released {
+                tray::alternar_gravacao(app, &cliente);
+            }
+        }
+    };
+
+    if let Err(erro) = app.global_shortcut().on_shortcut(atalho, manipulador) {
+        eprintln!("atalho global {atalho} indisponível: {erro}");
+        let _ = app.emit(
+            "atalho://indisponivel",
+            format!(
+                "O atalho global {atalho} não pôde ser registrado: outra aplicação \
+                 provavelmente já o usa. O resto do VoxVault funciona normalmente."
+            ),
+        );
+    }
+}
+
 /// Background supervision of the resident service.
 fn supervisionar(app: tauri::AppHandle, cliente: service::ServiceClient) {
     std::thread::Builder::new()
@@ -165,7 +232,13 @@ fn supervisionar(app: tauri::AppHandle, cliente: service::ServiceClient) {
                     }
                 }
 
+                let gravando = snapshot
+                    .saude
+                    .as_ref()
+                    .map(|saude| saude.gravacao_ativa)
+                    .unwrap_or(false);
                 std::thread::sleep(match snapshot.estado {
+                    service::ServiceState::Conectado if gravando => INTERVALO_GRAVANDO,
                     service::ServiceState::Conectado => INTERVALO_CONECTADO,
                     service::ServiceState::Falho => INTERVALO_PARADO,
                     _ => INTERVALO_PROCURANDO,

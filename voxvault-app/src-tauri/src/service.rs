@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::http;
 use crate::paths;
+use crate::system;
 
 /// Consecutive start failures tolerated inside [`FAILURE_WINDOW`].
 const FAILURE_BUDGET: usize = 3;
@@ -95,6 +96,17 @@ pub struct Snapshot {
     /// screen has to be able to show rather than average away.
     pub data_dir_do_servico: Option<String>,
     pub saude: Option<Health>,
+    /// The service's own view of the recording in progress, fetched in the same
+    /// pass as the health probe while one is running.
+    ///
+    /// It is passed through untouched rather than modelled here: the shape
+    /// belongs to the service, and a struct in this file would be a second
+    /// definition of it, free to fall behind.
+    pub gravacao: Option<serde_json::Value>,
+    /// Whether a meeting looks like it has started, and on what evidence.
+    /// Only asked for when nothing is being recorded -- during a recording the
+    /// answer is already known and the question would be pure cost.
+    pub deteccao: Option<serde_json::Value>,
     /// Natural-language cause, in pt-BR, for whatever state this is.
     pub detalhe: String,
     /// Corrective action, when there is one.
@@ -102,6 +114,10 @@ pub struct Snapshot {
     pub tentativas_recentes: usize,
     pub pode_tentar_de_novo: bool,
     pub caminho_do_log: Option<String>,
+    /// Process id the service published. Needed to measure the whole tree: a
+    /// measurement that leaves the service out would report a flattering and
+    /// false number.
+    pub pid_do_servico: Option<u32>,
 }
 
 struct Inner {
@@ -109,6 +125,8 @@ struct Inner {
     rendezvous: Option<Rendezvous>,
     endereco: Option<SocketAddr>,
     saude: Option<Health>,
+    gravacao: Option<serde_json::Value>,
+    deteccao: Option<serde_json::Value>,
     detalhe: String,
     acao: Option<String>,
     falhas: VecDeque<Instant>,
@@ -126,6 +144,8 @@ impl Default for Inner {
             rendezvous: None,
             endereco: None,
             saude: None,
+            gravacao: None,
+            deteccao: None,
             detalhe: "Ainda não verificado.".to_string(),
             acao: None,
             falhas: VecDeque::new(),
@@ -174,11 +194,18 @@ impl ServiceClient {
                         .filter(|dir| !dir.is_empty())
                 }),
             saude: inner.saude.clone(),
+            gravacao: inner.gravacao.clone(),
+            deteccao: inner.deteccao.clone(),
             detalhe: inner.detalhe.clone(),
             acao: inner.acao.clone(),
             tentativas_recentes: inner.falhas.len(),
             pode_tentar_de_novo: inner.desistiu,
             caminho_do_log: log_path().to_str().map(str::to_string),
+            pid_do_servico: inner
+                .rendezvous
+                .as_ref()
+                .map(|r| r.pid)
+                .filter(|pid| *pid > 0),
         }
     }
 
@@ -227,14 +254,47 @@ impl ServiceClient {
         match read_rendezvous() {
             Some(rendezvous) => match resolve(&rendezvous.endereco) {
                 Some(addr) => match probe(addr, &rendezvous.segredo) {
-                    Ok(saude) => self.marcar_conectado(rendezvous, addr, saude),
-                    Err(err) => self.marcar_perdido(err.mensagem()),
+                    Ok(saude) => {
+                        // Fetched in the same pass, and only while something is
+                        // being recorded. Asking for it every ten seconds with
+                        // the machine idle would be a request per minute that
+                        // nobody reads.
+                        let buscar = |caminho: &str| {
+                            http::request(
+                                addr,
+                                "GET",
+                                caminho,
+                                &rendezvous.segredo,
+                                None,
+                                REQUEST_TIMEOUT,
+                            )
+                            .ok()
+                            .and_then(|resposta| {
+                                serde_json::from_str::<serde_json::Value>(&resposta.body).ok()
+                            })
+                        };
+                        let gravacao = saude
+                            .gravacao_ativa
+                            .then(|| buscar("/gravacao"))
+                            .flatten();
+                        // Asked for only while idle. During a recording the
+                        // answer is already known, and asking would be a
+                        // request per tick that nobody could act on.
+                        let deteccao = (!saude.gravacao_ativa)
+                            .then(|| buscar("/deteccao"))
+                            .flatten();
+                        self.marcar_conectado(rendezvous, addr, saude, gravacao, deteccao)
+                    }
+                    Err(err) => self.marcar_perdido(err.mensagem(), rendezvous.pid),
                 },
-                None => self.marcar_perdido(format!(
-                    "O endereço publicado pelo serviço não pôde ser interpretado: \
-                     {}.",
-                    rendezvous.endereco
-                )),
+                None => self.marcar_perdido(
+                    format!(
+                        "O endereço publicado pelo serviço não pôde ser \
+                         interpretado: {}.",
+                        rendezvous.endereco
+                    ),
+                    rendezvous.pid,
+                ),
             },
             None => self.tentar_iniciar(),
         }
@@ -245,6 +305,8 @@ impl ServiceClient {
         rendezvous: Rendezvous,
         addr: SocketAddr,
         saude: Health,
+        gravacao: Option<serde_json::Value>,
+        deteccao: Option<serde_json::Value>,
     ) -> Transition {
         let mut inner = self.inner.lock().unwrap();
         let era_conectado = inner.estado == ServiceState::Conectado;
@@ -252,6 +314,8 @@ impl ServiceClient {
         inner.rendezvous = Some(rendezvous);
         inner.endereco = Some(addr);
         inner.saude = Some(saude);
+        inner.gravacao = gravacao;
+        inner.deteccao = deteccao;
         inner.detalhe = "Serviço local em execução.".to_string();
         inner.acao = None;
         inner.falhas.clear();
@@ -263,25 +327,44 @@ impl ServiceClient {
         }
     }
 
-    /// The rendezvous point names a service that no longer answers.
-    fn marcar_perdido(&self, causa: String) -> Transition {
+    /// The rendezvous point names a service that did not answer this pass.
+    ///
+    /// Whether that means the service is gone is decided by the process, not by
+    /// the request: a single timed-out probe against a service that is merely
+    /// busy says nothing. The rendezvous file belongs to the service, and this
+    /// client removes it only once the process behind it is provably gone --
+    /// deleting it under a live service would leave it running and
+    /// undiscoverable, and the next start attempt would be refused by its own
+    /// exclusivity claim with nothing left to point at it.
+    fn marcar_perdido(&self, causa: String, pid: u32) -> Transition {
+        let vivo = system::process_is_alive(pid);
         let caiu = {
             let mut inner = self.inner.lock().unwrap();
             let caiu = inner.estado == ServiceState::Conectado;
             inner.estado = ServiceState::Indisponivel;
             inner.saude = None;
-            inner.detalhe = causa;
+            inner.gravacao = None;
+            inner.deteccao = None;
+            inner.detalhe = if vivo {
+                format!(
+                    "{causa}\n\nO processo do serviço (pid {pid}) continua em \
+                     execução, então ele está ocupado ou lento, não caído."
+                )
+            } else {
+                causa
+            };
             inner.acao = Some(
-                "O endereço publicado não responde. O aplicativo vai tentar \
-                 novamente; nenhuma gravação é perdida por isso."
+                "O aplicativo vai tentar novamente; nenhuma gravação é perdida \
+                 por isso."
                     .to_string(),
             );
             caiu
         };
-        // A stale rendezvous file is the normal trace of a service that exited.
-        // Removing it lets the next pass take the start path instead of
-        // knocking on a dead address forever.
-        let _ = std::fs::remove_file(paths::rendezvous_file());
+        if !vivo {
+            // The process is gone. Its rendezvous now points at nothing, and a
+            // file pointing at a dead process is worse than no file.
+            let _ = std::fs::remove_file(paths::rendezvous_file());
+        }
         if caiu {
             Transition::Crashed
         } else {
@@ -321,6 +404,8 @@ impl ServiceClient {
         }
         inner.falhas.push_back(agora);
         inner.saude = None;
+        inner.gravacao = None;
+        inner.deteccao = None;
 
         if inner.falhas.len() >= FAILURE_BUDGET {
             inner.desistiu = true;
@@ -400,7 +485,9 @@ pub fn call(
     };
     let response = http::request(addr, method, path, &segredo, body, REQUEST_TIMEOUT)
         .map_err(|err| err.mensagem())?;
-    if response.body.trim().is_empty() {
+    // 204 and an empty body both mean "done, nothing to report" -- a recording
+    // that stopped cleanly has no payload to hand back.
+    if response.status == 204 || response.body.trim().is_empty() {
         return Ok(serde_json::Value::Null);
     }
     serde_json::from_str(&response.body)

@@ -85,9 +85,20 @@ export function papelDoFalante(valor: string, trilha: string): "eu" | "outros" |
 export const ROTULO_SITUACAO: Record<string, string> = {
   gravando: "Gravando",
   na_fila: "Aguardando transcrição",
+  transcrevendo: "Transcrevendo",
   pronta: "Pronta",
+  falhou: "Falhou",
   incompleta: "Finalização incompleta",
 };
+
+/** Which visual weight each state gets. Failure is the one that has to be
+ *  impossible to skim past. */
+export function tomDaSituacao(situacao: string): "ok" | "erro" | "alerta" | "acento" {
+  if (situacao === "pronta") return "ok";
+  if (situacao === "falhou" || situacao === "incompleta") return "erro";
+  if (situacao === "gravando") return "alerta";
+  return "acento";
+}
 
 export const ROTULO_ORIGEM: Record<string, string> = {
   gravada: "Gravada",

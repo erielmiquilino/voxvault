@@ -8,15 +8,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-export interface Pendencia {
-  comando: string;
-  sinalizador: string;
-}
-
 export interface Falha {
   mensagem: string;
   acao: string | null;
-  pendencia: Pendencia | null;
 }
 
 export function ehFalha(valor: unknown): valor is Falha {
@@ -26,7 +20,7 @@ export function ehFalha(valor: unknown): valor is Falha {
 /** Normalises anything thrown across the bridge into a `Falha`. */
 export function comoFalha(erro: unknown): Falha {
   if (ehFalha(erro)) return erro;
-  return { mensagem: String(erro), acao: null, pendencia: null };
+  return { mensagem: String(erro), acao: null };
 }
 
 export type EstadoDoServico =
@@ -44,16 +38,55 @@ export interface Saude {
   versao: string;
 }
 
+/** The service's own view of the recording in progress. */
+export interface GravacaoView {
+  ativa: boolean;
+  pausada: boolean;
+  uid: string;
+  titulo: string;
+  inicio: string;
+  duracao_ms: number;
+  divergencia_ms: number;
+  /** Track name to milliseconds written. A track that stopped capturing stops
+   *  growing, which is how the interface knows which one died. */
+  trilhas: Record<string, number>;
+  avisos: string[];
+  /** Per-track peak since the last read, plus how long that track has been
+   *  silent. Reading resets the peak, so the update rate is this app's polling
+   *  rate and the 20/s cap is respected by construction. */
+  niveis: Record<string, { pico: number; silencio_ha_s: number }>;
+}
+
+/** Whether a meeting looks like it has started, and on what evidence.
+ *  A suggestion only: nothing here ever starts a recording on its own. */
+export interface Deteccao {
+  disponivel: boolean;
+  motivo?: string;
+  gravando?: boolean;
+  deteccao: {
+    aplicativo: string;
+    sinal: string;
+    /** True when the evidence is circumstantial — a browser, which says less
+     *  about what it is doing than a meeting client does. */
+    fraco: boolean;
+    sustentado_ha_s: number;
+  } | null;
+  candidatos?: { aplicativo: string; sinal: string }[];
+}
+
 export interface ServicoSnapshot {
   estado: EstadoDoServico;
   endereco: string | null;
   data_dir_do_servico: string | null;
   saude: Saude | null;
+  gravacao: GravacaoView | null;
+  deteccao: Deteccao | null;
   detalhe: string;
   acao: string | null;
   tentativas_recentes: number;
   pode_tentar_de_novo: boolean;
   caminho_do_log: string | null;
+  pid_do_servico: number | null;
 }
 
 export interface Ambiente {
@@ -64,7 +97,13 @@ export interface Ambiente {
   acao: string | null;
 }
 
-export type Situacao = "gravando" | "na_fila" | "pronta" | "incompleta";
+export type Situacao =
+  | "gravando"
+  | "na_fila"
+  | "transcrevendo"
+  | "pronta"
+  | "falhou"
+  | "incompleta";
 
 export interface Resumo {
   uid: string;
@@ -73,6 +112,13 @@ export interface Resumo {
   fim: string;
   duracao_ms: number;
   situacao: Situacao;
+  /** Availability and attempt stay separate: a meeting being reprocessed is
+   *  readable and busy at the same time. */
+  transcricao_disponivel: boolean;
+  completude: string;
+  revisao_ativa: string;
+  estado_da_tentativa: string;
+  motivo_da_falha: string | null;
   origem: string;
   tem_audio: boolean;
   tem_notas: boolean;
@@ -97,9 +143,23 @@ export interface Trilha {
   bytes: number;
 }
 
+export type TipoDeNota = "resumo" | "decisoes" | "pendencias" | "livre";
+
+export interface Nota {
+  uid: string;
+  tipo: string;
+  conteudo: string;
+  autoria_tipo: string;
+  autoria_cliente: string;
+  criada_em: string;
+  alterada_em: string;
+}
+
+/** Per-meeting content. The summary is not repeated here — the caller already
+ *  holds the core's authoritative one from the list. */
 export interface Detalhe {
-  resumo: Resumo;
   segmentos: Segmento[];
+  notas: Nota[];
   trilhas: Trilha[];
   dispositivos: unknown;
   pausas: unknown;
@@ -159,18 +219,56 @@ export const gravacaoEncerrar = () => invoke<unknown>("gravacao_encerrar");
 
 // -- library -----------------------------------------------------------------
 
-export const reunioesListar = () => invoke<Resumo[]>("reunioes_listar");
-export const reuniaoDetalhar = (uid: string) => invoke<Detalhe>("reuniao_detalhar", { uid });
+export const reunioesListar = (limite = 200) => invoke<Resumo[]>("reunioes_listar", { limite });
+export const reuniaoDetalhar = (uid: string, diretorio: string, revisaoAtiva: string | null) =>
+  invoke<Detalhe>("reuniao_detalhar", { uid, diretorio, revisaoAtiva });
 export const reuniaoDoNucleo = (uid: string) => invoke<unknown>("reuniao_do_nucleo", { uid });
 export const reuniaoReprocessar = (uid: string) => invoke<string>("reuniao_reprocessar", { uid });
 export const reuniaoExportar = (uid: string) => invoke<string[]>("reuniao_exportar", { uid });
 export const reuniaoRenomear = (uid: string, titulo: string) =>
-  invoke<void>("reuniao_renomear", { uid, titulo });
-export const reuniaoRemoverAudio = (uid: string) => invoke<void>("reuniao_remover_audio", { uid });
-export const reuniaoAbrirPasta = (uid: string) => invoke<void>("reuniao_abrir_pasta", { uid });
+  invoke<string>("reuniao_renomear", { uid, titulo });
+/** Dry run: the core describes what it would remove, and that description is
+ *  what the confirmation shows. */
+export const reuniaoRemoverAudioPrevia = (uid: string) =>
+  invoke<string>("reuniao_remover_audio_previa", { uid });
+export const reuniaoRemoverAudio = (uid: string) =>
+  invoke<string>("reuniao_remover_audio", { uid });
+export const reuniaoAbrirPasta = (diretorio: string) =>
+  invoke<void>("reuniao_abrir_pasta", { diretorio });
 export const abrirCaminho = (caminho: string) => invoke<void>("abrir_caminho", { caminho });
-export const buscar = (termo: string, limite = 50) => invoke<unknown>("busca", { termo, limite });
-export const notasListar = (uid: string) => invoke<unknown>("notas_listar", { uid });
+
+export type EscopoDeBusca = "transcricoes" | "notas" | "ambos";
+
+/** A transcript hit carries an instant and a speaker; a note hit carries
+ *  neither, because a note has no position in the timeline. */
+export interface ResultadoDeBusca {
+  reuniao: string;
+  titulo: string;
+  natureza: "transcricao" | "nota";
+  recorte: string;
+  texto: string;
+  inicio_ms?: number;
+  fim_ms?: number;
+  falante?: string;
+  trilha?: string;
+  nota?: string;
+  tipo?: string;
+}
+
+export const buscar = (termo: string, escopo: EscopoDeBusca = "ambos", limite = 50) =>
+  invoke<{ termo: string; escopo: string; resultados: ResultadoDeBusca[] }>("busca", {
+    termo,
+    escopo,
+    limite,
+  });
+
+// Notes are read from the meeting's structured export, which the core
+// regenerates on every note write; there is no separate listing call.
+export const notaCriar = (uid: string, tipo: TipoDeNota, conteudo: string) =>
+  invoke<string>("nota_criar", { uid, tipo, conteudo });
+export const notaAlterar = (id: string, conteudo: string) =>
+  invoke<string>("nota_alterar", { id, conteudo });
+export const notaRemover = (id: string) => invoke<string>("nota_remover", { id });
 
 // -- import ------------------------------------------------------------------
 
@@ -184,14 +282,49 @@ export const diretorioDeDadosValidar = (caminho: string) =>
   invoke<DiretorioDeDados>("diretorio_de_dados_validar", { caminho });
 export const diretorioDeDadosAlterar = (caminho: string) =>
   invoke<string>("diretorio_de_dados_alterar", { caminho });
-export const configuracaoLer = () => invoke<unknown>("configuracao_ler");
+/** Effective configuration: each value with the source that imposed it. */
+export interface Configuracao {
+  arquivo: string;
+  valores: Record<string, { valor: string; origem: string }>;
+}
+
+export interface Dispositivo {
+  id: string;
+  nome: string;
+  fluxo: "entrada" | "saida";
+  /** Which Windows roles this endpoint is the default for. Meeting platforms
+   *  follow "comunicacoes". */
+  padrao_de: string[];
+  estado: string;
+  formato: string;
+  parece_fone: boolean;
+}
+
+export interface ItemDoDoctor {
+  chave: string;
+  rotulo: string;
+  estado: "ok" | "aviso" | "falha";
+  detalhe: string;
+  acao: string | null;
+}
+
+export interface Doctor {
+  itens: ItemDoDoctor[];
+  falhou: boolean;
+  avisou: boolean;
+  configuracao: Record<string, { valor: string; origem: string }>;
+}
+
+export const configuracaoLer = () => invoke<Configuracao>("configuracao_ler");
 export const configuracaoGravar = (atribuicoes: string[]) =>
   invoke<string>("configuracao_gravar", { atribuicoes });
-export const dispositivos = () => invoke<unknown>("dispositivos");
-export const diagnosticoDoNucleo = () => invoke<unknown>("diagnostico_do_nucleo");
+export const dispositivos = () =>
+  invoke<{ dispositivos: Dispositivo[] }>("dispositivos");
+export const diagnosticoDoNucleo = () => invoke<Doctor>("diagnostico_do_nucleo");
 export const diagnosticoDoAplicativo = () =>
   invoke<ItemDeDiagnostico[]>("diagnostico_do_aplicativo");
-export const trechoMcp = () => invoke<string>("trecho_mcp");
+export const mcpEstado = () => invoke<string>("mcp_estado");
+export const mcpRegistrar = () => invoke<string>("mcp_registrar");
 
 // -- closing -----------------------------------------------------------------
 

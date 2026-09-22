@@ -49,10 +49,18 @@ fn home_dir() -> PathBuf {
 
 /// Root of the Python core checkout.
 ///
-/// Resolution order: explicit environment variable, then the sibling directory
-/// of the app inside the repository. The sibling walk exists because the app is
-/// built and run from this machine's checkout; if distribution ever changes,
-/// this is one of the two places that has to be revisited.
+/// Resolution order: an explicit environment variable, the repository found by
+/// walking up from the running executable, then the repository found by walking
+/// up from where this crate was compiled.
+///
+/// The last one is not a fallback for tidiness. Build artefacts live on another
+/// volume here, because the volume holding the source has a few gigabytes free
+/// and one debug build fills it. That puts the executable outside the
+/// repository entirely, so a walk from the executable finds nothing. The app is
+/// built and run from this machine's checkout by declared decision, which makes
+/// the compile-time location a fact about this build rather than a guess -- and
+/// it is the same decision that would have to be revisited if the application
+/// were ever distributed.
 pub fn core_root() -> Option<PathBuf> {
     if let Some(raw) = env::var_os(ENV_CORE_ROOT) {
         let path = PathBuf::from(raw);
@@ -60,8 +68,16 @@ pub fn core_root() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let exe = env::current_exe().ok()?;
-    let mut cursor: Option<&Path> = Some(exe.as_path());
+    if let Ok(exe) = env::current_exe() {
+        if let Some(found) = walk_up_for_core(&exe) {
+            return Some(found);
+        }
+    }
+    walk_up_for_core(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn walk_up_for_core(start: &Path) -> Option<PathBuf> {
+    let mut cursor: Option<&Path> = Some(start);
     while let Some(dir) = cursor {
         let candidate = dir.join("voxvault-core");
         if candidate.join("pyproject.toml").is_file() {
@@ -79,13 +95,6 @@ pub fn core_executable() -> Option<PathBuf> {
         .join("Scripts")
         .join("voxvault.exe");
     candidate.is_file().then_some(candidate)
-}
-
-/// Whether the core's environment looks prepared. Deliberately a file check
-/// and not a successful run: a run costs process startup, and this answer is
-/// needed before the window opens.
-pub fn core_environment_ready() -> bool {
-    core_executable().is_some()
 }
 
 /// Effective data directory together with the source that imposed it.

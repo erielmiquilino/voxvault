@@ -60,6 +60,35 @@ pub fn writable(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the process that published a rendezvous still exists.
+///
+/// A rendezvous file outlives a process that was killed abruptly, so a client
+/// that trusted it blindly would wait for an answer that is never coming. It
+/// matters in the other direction too: a service that is merely slow to answer
+/// one request is still the owner of this machine's capture, and a client that
+/// concluded otherwise would try to start a second one.
+pub fn process_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: a null handle is checked before use and closed on every path.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut code as *mut u32);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
 /// Reveal a path in Explorer.
 pub fn reveal(path: &Path) -> Result<(), String> {
     if !path.exists() {
