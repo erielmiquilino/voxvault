@@ -144,26 +144,26 @@ def _build_parser() -> argparse.ArgumentParser:
     transcribe.add_argument("--json", action="store_true")
     transcribe.set_defaults(handler=_cmd_transcribe)
 
-    # Two names for one command: `benchmark` is what the specification calls
-    # it, `bench` is what anyone types twenty times in an afternoon.
-    for nome in ("benchmark", "bench"):
-        bench = sub.add_parser(
-            nome,
-            help=("Compara varias configuracoes de modelo sobre o mesmo audio."
-                  if nome == "benchmark" else argparse.SUPPRESS),
-        )
-        bench.add_argument("arquivo", type=Path)
-        bench.add_argument(
-            "--config", type=Path, metavar="ARQUIVO",
-            help="Arquivo JSON com as configuracoes a comparar.",
-        )
-        bench.add_argument(
-            "--models", default="",
-            help="Modelos separados por virgula, quando nao ha arquivo.",
-        )
-        bench.add_argument("--language", default=None)
-        bench.add_argument("--vocabulary", default=None)
-        bench.set_defaults(handler=_cmd_bench)
+    # One command, two names: `benchmark` is what the specification calls it,
+    # `bench` is what anyone types twenty times in an afternoon. An alias, not
+    # a second parser -- a second one appears in --help as its own entry.
+    bench = sub.add_parser(
+        "benchmark",
+        aliases=["bench"],
+        help="Compara varias configuracoes de modelo sobre o mesmo audio.",
+    )
+    bench.add_argument("arquivo", type=Path)
+    bench.add_argument(
+        "--config", type=Path, metavar="ARQUIVO",
+        help="Arquivo JSON com as configuracoes a comparar.",
+    )
+    bench.add_argument(
+        "--models", default="",
+        help="Modelos separados por virgula, quando nao ha arquivo.",
+    )
+    bench.add_argument("--language", default=None)
+    bench.add_argument("--vocabulary", default=None)
+    bench.set_defaults(handler=_cmd_bench)
 
     config_cmd = sub.add_parser(
         "config", help="Mostra ou altera a configuracao compartilhada."
