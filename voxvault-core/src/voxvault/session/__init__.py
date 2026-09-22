@@ -306,6 +306,16 @@ class RecordingSession:
                 collected.append(f"erro de escrita em '{track}': {writer.stats.write_error}")
         return collected
 
+    def levels(self) -> dict[str, dict]:
+        """Per-track level, for a meter. Reading resets each track's peak."""
+        return {
+            track: {
+                "pico": round(writer.take_level(), 4),
+                "silencio_ha_s": round(writer.silent_for_s, 1),
+            }
+            for track, writer in self._writers.items()
+        }
+
     def track_stats(self) -> dict[str, dict]:
         return {
             track: {

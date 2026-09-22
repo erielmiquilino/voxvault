@@ -87,6 +87,8 @@ class TrackWriter:
         self._lock = threading.Lock()
         self._paused = False
         self._resampler = None
+        self._peak = 0.0
+        self._silent_since = time.monotonic()
         self._handle: WavFile | None = WavFile(
             path, sample_rate=TARGET_RATE, channels=TARGET_CHANNELS
         )
@@ -159,6 +161,28 @@ class TrackWriter:
         self._resampler = None
         return already_ms
 
+    def take_level(self) -> float:
+        """The loudest sample since the last read, from 0 to 1.
+
+        Reading resets it. A meter shows what happened during the interval the
+        person was looking at, and a level that only ever rose would stay
+        pinned at the loudest moment of the whole meeting.
+        """
+        peak, self._peak = self._peak, 0.0
+        if peak > 0.0:
+            self._silent_since = time.monotonic()
+        return peak
+
+    @property
+    def silent_for_s(self) -> float:
+        """How long this track has been delivering nothing audible.
+
+        A microphone muted at the operating system level still delivers
+        packets, full of zeroes. Only this distinguishes "quiet room" from
+        "recording silence for twenty minutes without knowing".
+        """
+        return time.monotonic() - self._silent_since
+
     @property
     def timeline_ms(self) -> int:
         """Where this track stands on the session timeline.
@@ -214,6 +238,12 @@ class TrackWriter:
         import numpy as np  # noqa: PLC0415
 
         clipped = np.clip(data, -1.0, 1.0)
+        if clipped.size:
+            # One pass over samples already in cache, for the level meter that
+            # tells a person their microphone is actually picking something up.
+            # Kept as a running maximum and reset when read, so publishing it
+            # costs the reader's rate and not the packet rate.
+            self._peak = max(self._peak, float(np.abs(clipped).max()))
         return (clipped * 32767.0).astype(np.int16)
 
     # -- writing -------------------------------------------------------

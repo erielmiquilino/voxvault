@@ -64,6 +64,10 @@ class RecordingView:
     divergencia_ms: int = 0
     trilhas: dict = field(default_factory=dict)
     avisos: list = field(default_factory=list)
+    #: Per-track peak since the last read, so a meter can show that the
+    #: microphone is picking something up. Reading resets it, which caps the
+    #: update rate at whatever the caller polls at.
+    niveis: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +80,7 @@ class RecordingView:
             "divergencia_ms": self.divergencia_ms,
             "trilhas": self.trilhas,
             "avisos": self.avisos,
+            "niveis": self.niveis,
         }
 
 
@@ -344,6 +349,7 @@ class ResidentService:
                 divergencia_ms=session.drift_ms,
                 trilhas={t: s["duracao_ms"] for t, s in session.track_stats().items()},
                 avisos=session.warnings,
+                niveis=session.levels(),
             ).to_dict()
 
     def start_recording(self, title: str = "") -> dict:

@@ -13,6 +13,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from ..layout import available_tracks
+
 PROG = "voxvault"
 
 
@@ -32,6 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("-v", "--verbose", action="store_true",
                         help="Mostra a origem de todos os valores de configuracao.")
+    doctor.add_argument("--json", action="store_true")
     doctor.set_defaults(handler=_cmd_doctor)
 
     record = sub.add_parser(
@@ -53,7 +56,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     listar = sub.add_parser("list", help="Lista as reunioes guardadas.")
     listar.add_argument("-n", "--limit", type=int, default=20)
+    listar.add_argument("--json", action="store_true")
     listar.set_defaults(handler=_cmd_list)
+
+    rename = sub.add_parser("rename", help="Muda o titulo de uma reuniao.")
+    rename.add_argument("uid")
+    rename.add_argument("--title", required=True, metavar="TITULO")
+    rename.set_defaults(handler=_cmd_rename)
+
+    remove_audio = sub.add_parser(
+        "remove-audio",
+        help="Remove o audio de uma reuniao, preservando a transcricao.",
+    )
+    remove_audio.add_argument("uid")
+    remove_audio.add_argument(
+        "--yes", action="store_true",
+        help="Confirma a remocao, que nao pode ser desfeita.",
+    )
+    remove_audio.set_defaults(handler=_cmd_remove_audio)
 
     show = sub.add_parser("show", help="Mostra a transcricao de uma reuniao.")
     show.add_argument("uid")
@@ -63,6 +83,12 @@ def _build_parser() -> argparse.ArgumentParser:
     search = sub.add_parser("search", help="Busca no historico de transcricoes.")
     search.add_argument("termo")
     search.add_argument("-n", "--limit", type=int, default=20)
+    search.add_argument(
+        "--scope", default="ambos",
+        choices=["transcricoes", "notas", "ambos"],
+        help="Onde procurar. O padrao alcanca transcricoes e notas.",
+    )
+    search.add_argument("--json", action="store_true")
     search.set_defaults(handler=_cmd_search)
 
     # The accepted note types are spelled out here instead of read from
@@ -130,11 +156,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "config", help="Mostra ou altera a configuracao compartilhada."
     )
     config_cmd.add_argument("atribuicao", nargs="*", metavar="CAMPO=VALOR")
+    config_cmd.add_argument("--json", action="store_true")
     config_cmd.set_defaults(handler=_cmd_config)
 
     devices = sub.add_parser(
         "devices", help="Lista os dispositivos de audio e os padroes por papel."
     )
+    devices.add_argument("--json", action="store_true")
     devices.set_defaults(handler=_cmd_devices)
 
     serve = sub.add_parser(
@@ -191,6 +219,31 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
     config = _load(args)
     report = run_diagnostics(config)
+
+    if args.json:
+        import json  # noqa: PLC0415
+
+        sys.stdout.write(json.dumps({
+            "itens": [
+                {
+                    "chave": item.key,
+                    "rotulo": item.label,
+                    "estado": item.status,
+                    "detalhe": item.detail,
+                    "acao": item.remedy or None,
+                }
+                for item in report.items
+            ],
+            "falhou": report.failed,
+            "avisou": report.warned,
+            "configuracao": {
+                nome: {"valor": str(getattr(config, nome)), "origem": origem}
+                for nome, origem in sorted(report.config_sources.items())
+            },
+        }, ensure_ascii=False, indent=2))
+        sys.stdout.write("\n")
+        return 1 if report.failed else 0
+
     sys.stdout.write(format_report(report, config, verbose=args.verbose))
     return 1 if report.failed else 0
 
@@ -321,11 +374,50 @@ def _cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _meeting_json(store, meeting) -> dict:
+    """One meeting, with availability and attempt as separate attributes.
+
+    They are not the same thing and never collapse: a meeting being
+    reprocessed has a readable transcript AND a running attempt, and a single
+    field would have to lie about one of them. A surface reading this can tell
+    a failed transcription from a queued one, which a status string could not.
+    """
+    revision = store.active_revision(meeting.uid)
+    return {
+        "id": meeting.uid,
+        "titulo": meeting.title,
+        "inicio": meeting.started_at.isoformat(),
+        "fim": meeting.ended_at.isoformat() if meeting.ended_at else None,
+        "duracao_ms": meeting.duration_ms,
+        "origem": str(meeting.origin),
+        "estado_da_gravacao": str(meeting.state),
+        "diretorio": meeting.directory,
+        "transcricao_disponivel": revision is not None,
+        "completude": str(revision.state) if revision else None,
+        "revisao_ativa": revision.uid if revision else None,
+        "motor": revision.engine_id if revision else None,
+        "estado_da_tentativa": str(meeting.attempt_state),
+        "motivo_da_falha": meeting.attempt_error or None,
+        "tem_audio": bool(available_tracks(Path(meeting.directory))),
+    }
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
+    import json  # noqa: PLC0415
+
     config = _load(args)
     store = _open_store(config)
     try:
         meetings = store.list_meetings(limit=args.limit)
+
+        if args.json:
+            sys.stdout.write(json.dumps(
+                {"reunioes": [_meeting_json(store, m) for m in meetings]},
+                ensure_ascii=False, indent=2,
+            ))
+            sys.stdout.write("\n")
+            return 0
+
         if not meetings:
             sys.stdout.write("Nenhuma reuniao guardada ainda.\n")
             return 0
@@ -413,18 +505,129 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
+    import json  # noqa: PLC0415
+
     config = _load(args)
     store = _open_store(config)
     try:
-        hits = store.search(args.termo, limit=args.limit)
+        hits = store.search(args.termo, scope=args.scope, limit=args.limit)
+
+        if args.json:
+            items = []
+            for hit in hits:
+                # A note has no instant, no track and no speaker. Filling those
+                # with zeros would render an interpretation as though somebody
+                # had said it at the start of the meeting.
+                item = {
+                    "reuniao": hit.meeting_uid,
+                    "titulo": hit.meeting_title,
+                    "natureza": getattr(hit, "nature", "transcricao"),
+                    "recorte": hit.excerpt,
+                    "texto": hit.text,
+                }
+                if hasattr(hit, "start_ms"):
+                    item["inicio_ms"] = hit.start_ms
+                    item["fim_ms"] = hit.end_ms
+                    item["falante"] = hit.speaker
+                    item["trilha"] = hit.track
+                nota = getattr(hit, "note_uid", None) or getattr(hit, "uid", None)
+                if nota:
+                    item["nota"] = nota
+                    item["tipo"] = str(getattr(hit, "kind", ""))
+                items.append(item)
+            sys.stdout.write(json.dumps(
+                {"termo": args.termo, "escopo": args.scope, "resultados": items},
+                ensure_ascii=False, indent=2,
+            ))
+            sys.stdout.write("\n")
+            return 0
+
         if not hits:
             sys.stdout.write(f"Nada encontrado para '{args.termo}'.\n")
             return 0
         for hit in hits:
+            instante = (
+                f"[{_stamp(hit.start_ms)}]" if hasattr(hit, "start_ms") else "[nota   ]"
+            )
             sys.stdout.write(
-                f"{hit.meeting_uid[:8]}  [{_stamp(hit.start_ms)}]  "
+                f"{hit.meeting_uid[:8]}  {instante}  "
                 f"{hit.meeting_title[:30]:<30}  {hit.excerpt.strip()[:80]}\n"
             )
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_rename(args: argparse.Namespace) -> int:
+    config = _load(args)
+    store = _open_store(config)
+    try:
+        uid = _resolve_uid(store, args.uid)
+        store.rename_meeting(uid, args.title)
+        # The title is in the readable export's heading, so the file on disk
+        # would otherwise keep the old one.
+        try:
+            from ..store import regenerate_exports  # noqa: PLC0415
+
+            if store.get_meeting(uid).active_revision_id is not None:
+                regenerate_exports(store, uid)
+        except Exception as exc:
+            sys.stderr.write(f"aviso: exportacoes nao regeradas: {exc}\n")
+        sys.stdout.write(f"{uid} agora se chama '{args.title}'.\n")
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_remove_audio(args: argparse.Namespace) -> int:
+    """Delete a meeting's audio, keeping everything that was said.
+
+    Refused when there is no transcript: removing the audio then would leave
+    nothing at all of the meeting, which is not a trade anybody means to make.
+    """
+    config = _load(args)
+    store = _open_store(config)
+    try:
+        uid = _resolve_uid(store, args.uid)
+        meeting = store.get_meeting(uid)
+        directory = Path(meeting.directory)
+        tracks = available_tracks(directory)
+
+        if not tracks:
+            sys.stdout.write(f"{uid} ja nao tem audio em disco.\n")
+            return 0
+
+        if str(meeting.state) == "gravando":
+            sys.stderr.write(
+                "A reuniao ainda esta gravando. Encerre a gravacao antes.\n"
+            )
+            return 1
+
+        if store.active_revision(uid) is None:
+            sys.stderr.write(
+                f"'{meeting.title}' nao tem transcricao. Remover o audio agora "
+                f"apagaria a reuniao inteira, sem deixar nada do que foi dito. "
+                f"Transcreva primeiro, com: voxvault queue --run\n"
+            )
+            return 1
+
+        total = sum(p.stat().st_size for p in tracks.values())
+        if not args.yes:
+            sys.stdout.write(
+                f"Remover {len(tracks)} arquivo(s) de audio de '{meeting.title}', "
+                f"{total / (1024 * 1024):.1f} MB.\n"
+                f"A transcricao e as notas permanecem. O audio nao volta.\n"
+                f"Confirme com --yes.\n"
+            )
+            return 0
+
+        for track, path in sorted(tracks.items()):
+            path.unlink(missing_ok=True)
+            sys.stdout.write(f"  removida a trilha '{track}'\n")
+        sys.stdout.write(
+            f"Audio de {uid} removido. A transcricao continua legivel, e "
+            f"reprocessar deixa de ser possivel.\n"
+        )
     finally:
         store.close()
     return 0
@@ -671,6 +874,21 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
     if not args.atribuicao:
         config = _load(args)
+        if args.json:
+            import json  # noqa: PLC0415
+
+            sys.stdout.write(json.dumps({
+                "arquivo": str(user_config_path()),
+                "valores": {
+                    nome: {
+                        "valor": str(getattr(config, nome)),
+                        "origem": config.source_of(nome),
+                    }
+                    for nome in sorted(config.sources)
+                },
+            }, ensure_ascii=False, indent=2))
+            sys.stdout.write("\n")
+            return 0
         sys.stdout.write(f"arquivo: {user_config_path()}\n\n")
         for name in sorted(config.sources):
             sys.stdout.write(
@@ -704,7 +922,29 @@ def _cmd_devices(args: argparse.Namespace) -> int:
         sys.stderr.write(f"Backend de captura indisponivel: {exc}\n")
         return 1
 
-    sys.stdout.write(format_endpoints(list_endpoints()))
+    endpoints = list_endpoints()
+
+    if args.json:
+        import json  # noqa: PLC0415
+
+        sys.stdout.write(json.dumps({
+            "dispositivos": [
+                {
+                    "id": e.id,
+                    "nome": e.name,
+                    "fluxo": e.flow,
+                    "padrao_de": sorted(e.default_for),
+                    "estado": e.state_name,
+                    "formato": e.form_factor_name,
+                    "parece_fone": e.looks_like_headphones,
+                }
+                for e in endpoints
+            ],
+        }, ensure_ascii=False, indent=2))
+        sys.stdout.write("\n")
+        return 0
+
+    sys.stdout.write(format_endpoints(endpoints))
     sys.stdout.write("\n")
     return 0
 
