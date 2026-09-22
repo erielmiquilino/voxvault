@@ -202,6 +202,7 @@ class ResidentService:
 
         self.recover()
         self.pipeline.start()
+        self._prewarm_devices()
 
         supervisor = threading.Thread(
             target=self._supervise, name="voxvault-supervisao", daemon=True
@@ -213,6 +214,44 @@ class ResidentService:
         finally:
             self.shutdown()
         return 0
+
+    def _prewarm_devices(self) -> None:
+        """Pay the first device-open cost now, not when someone presses record.
+
+        The first ``IAudioClient::Initialize`` in a process is orders of
+        magnitude slower than every later one -- measured on this machine at
+        between 11 and 120 seconds, entirely inside the operating system call,
+        against 8 to 185 milliseconds once warm. The specification caps
+        starting a recording at 1500 ms, and that budget is unreachable on a
+        cold process. So the resident service opens and closes both endpoints
+        as soon as it starts, on its own thread, where the delay costs nobody
+        anything.
+        """
+        def warm() -> None:
+            from ..capture.devices import (  # noqa: PLC0415
+                FLOW_CAPTURE,
+                FLOW_RENDER,
+                default_endpoint,
+                role_from_config,
+            )
+            from ..capture.stream import prewarm  # noqa: PLC0415
+
+            role = role_from_config(self.config.device_role)
+            for flow, loopback in ((FLOW_CAPTURE, False), (FLOW_RENDER, True)):
+                try:
+                    endpoint = default_endpoint(flow, role)
+                    if endpoint is None:
+                        continue
+                    cost = prewarm(endpoint.id, loopback=loopback)
+                    self._record_event(
+                        "aquecido", f"{flow} em {cost:.0f} ms ({endpoint.name})"
+                    )
+                except Exception as exc:
+                    self._record_event("aviso", f"aquecimento de {flow}: {exc}")
+
+        threading.Thread(
+            target=warm, name="voxvault-aquecimento", daemon=True
+        ).start()
 
     def _supervise(self) -> None:
         """End the service once there is genuinely nothing to hold it open."""
@@ -334,8 +373,11 @@ class ResidentService:
         from ..store import Origin  # noqa: PLC0415
         from ..types import MeetingState  # noqa: PLC0415
 
+        from ..session.supervisor import TrackWatch  # noqa: PLC0415
+
         role = role_from_config(self.config.device_role)
         streams: dict[str, object] = {}
+        watches: list[TrackWatch] = []
         problems: list[str] = []
         for track, flow, policy, pinned in (
             ("mic", FLOW_CAPTURE, self.config.mic_policy, self.config.mic_device_id),
@@ -350,6 +392,10 @@ class ResidentService:
                 streams[track] = CaptureStream(
                     endpoint.id, loopback=(flow == FLOW_RENDER), name=track
                 )
+                watches.append(TrackWatch(
+                    track=track, flow=flow, policy=policy, pinned_id=pinned,
+                    role=role, endpoint_id=endpoint.id, endpoint_name=endpoint.name,
+                ))
             except Exception as exc:
                 problems.append(f"{track}: {exc}")
 
@@ -365,9 +411,19 @@ class ResidentService:
         )
         try:
             session.start()
-        except Exception:
+        except Exception as exc:
             self.pipeline.resume_after_recording()
-            raise
+            # The session knows why each track refused; without those the
+            # caller only learns that nothing opened, which is the least
+            # useful half of the story.
+            detail = "; ".join(session.warnings + problems)
+            raise ServiceBusy(
+                f"{exc}{(' Motivos: ' + detail) if detail else ''}"
+            ) from exc
+
+        # Only the tracks that actually opened are watched: a track that never
+        # started has nothing to migrate.
+        session.supervise_devices([w for w in watches if w.track in streams])
 
         self.store.create_meeting(
             uid=session.uid, title=session.title, started_at=session.started_at,

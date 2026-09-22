@@ -145,6 +145,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--status", action="store_true",
         help="Apenas informa se ha um servico em execucao.",
     )
+    serve.add_argument(
+        "--stop", action="store_true",
+        help="Pede ao servico em execucao que encerre.",
+    )
+    serve.add_argument(
+        "--force", action="store_true",
+        help="Com --stop, encerra mesmo havendo gravacao ou fila pendente.",
+    )
     serve.set_defaults(handler=_cmd_serve)
 
     mcp_cmd = sub.add_parser(
@@ -707,6 +715,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     config = _load(args)
 
+    if args.stop:
+        return _stop_service(force=args.force)
+
     if args.status:
         found = live_rendezvous()
         if found is None:
@@ -749,6 +760,72 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         sys.stdout.write("\nEncerrando o servico.\n")
         service.shutdown()
         return 0
+
+
+def _stop_service(*, force: bool) -> int:
+    """Ask the running service to end, and say plainly when it refuses.
+
+    A refusal is the service protecting work: it will not end with a recording
+    open or a queue pending, because ending would throw both away. ``--force``
+    is for when the person has decided otherwise, and it says what that costs.
+    """
+    import json  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    from ..service.rendezvous import SECRET_HEADER, live_rendezvous  # noqa: PLC0415
+
+    found = live_rendezvous()
+    if found is None:
+        sys.stdout.write("Nenhum servico em execucao.\n")
+        return 0
+
+    request = urllib.request.Request(
+        f"http://{found.endereco}/encerrar", data=b"{}", method="POST"
+    )
+    request.add_header(SECRET_HEADER, found.segredo)
+    request.add_header("Content-Type", "application/json")
+
+    detalhe = ""
+    try:
+        with urllib.request.urlopen(request, timeout=10):
+            sys.stdout.write(f"Servico {found.pid} encerrando.\n")
+            return 0
+    except urllib.error.HTTPError as exc:
+        try:
+            detalhe = json.loads(exc.read()).get("erro", "")
+        except Exception:
+            detalhe = str(exc)
+        if exc.code == 409 and not force:
+            sys.stderr.write(
+                f"{detalhe}\n"
+                f"Use --force para encerrar assim mesmo: a gravacao em "
+                f"andamento e finalizada e a fila continua de onde parou na "
+                f"proxima inicializacao.\n"
+            )
+            return 1
+    except urllib.error.URLError as exc:
+        detalhe = f"o servico nao respondeu ({exc.reason})"
+        if not force:
+            sys.stderr.write(f"{detalhe}\n")
+            return 1
+
+    if not force:
+        sys.stderr.write(f"{detalhe}\n")
+        return 1
+
+    # Terminating the tree is what releases the machine-wide claim; a child
+    # left behind would keep the next start from ever succeeding.
+    result = subprocess.run(
+        ["taskkill", "/PID", str(found.pid), "/T", "/F"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode == 0:
+        sys.stdout.write(f"Servico {found.pid} encerrado a forca.\n")
+        return 0
+    sys.stderr.write(f"Nao foi possivel encerrar o processo {found.pid}.\n")
+    return 1
 
 
 def _cmd_mcp(args: argparse.Namespace) -> int:

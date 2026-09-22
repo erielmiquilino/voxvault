@@ -199,6 +199,22 @@ def _check_capture() -> DiagnosticItem:
 
     detail = f"{len(inputs)} entrada(s) e {len(outputs)} saida(s) ativas"
 
+    # "Enumerable" is not "usable". Windows keeps reporting endpoints after
+    # the audio service behind them has gone bad, and opening one then fails
+    # with REGDB_E_CLASSNOTREG -- observed on this machine. A check that only
+    # counted devices would report everything fine and let the first recording
+    # of the day be the thing that discovers otherwise.
+    usable, refusal = _probe_open(inputs[0])
+    if not usable:
+        return DiagnosticItem(
+            "captura", "Captura de audio", "falha",
+            f"{detail}, mas abrir '{inputs[0].name}' falhou: {refusal}",
+            remedy=(
+                "Os dispositivos aparecem mas nao abrem. Reinicie o servico de "
+                "audio do Windows, ou a sessao, e rode o diagnostico de novo."
+            ),
+        )
+
     # The two roles can point at different devices, and on this machine they
     # do. VoxVault follows the communications role because that is what a
     # meeting client follows -- but anything played outside the meeting goes to
@@ -232,6 +248,24 @@ def _check_capture() -> DiagnosticItem:
             remedy="Use fone de ouvido para que a separacao das trilhas seja limpa.",
         )
     return DiagnosticItem("captura", "Captura de audio", "ok", detail)
+
+
+def _probe_open(endpoint) -> tuple[bool, str]:
+    """Actually open an endpoint, briefly, to prove it can be opened."""
+    try:
+        from .capture.stream import CaptureStream  # noqa: PLC0415
+
+        stream = CaptureStream(endpoint.id, loopback=False, name="diagnostico")
+        try:
+            # A short ceiling: this is a diagnosis, not a recording, and a
+            # cold open that takes a minute is itself worth failing on here
+            # rather than discovering when someone presses record.
+            stream.start(timeout_s=20.0)
+        finally:
+            stream.stop()
+    except Exception as exc:
+        return False, str(exc)
+    return True, ""
 
 
 def run_diagnostics(config: Config | None = None) -> Report:

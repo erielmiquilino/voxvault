@@ -87,7 +87,9 @@ class RecordingSession:
         self.started_at = datetime.now(timezone.utc)
         self._mic_stream = mic_stream
         self._system_stream = system_stream
+        self._streams: dict[str, object] = {}
         self._writers: dict[str, TrackWriter] = {}
+        self.supervisor = None
         self._pumps: list[threading.Thread] = []
         self._halt = threading.Event()
         self._paused = threading.Event()
@@ -135,6 +137,7 @@ class RecordingSession:
             )
 
         self._session_qpc_ns = max(armed.values())
+        self._streams = dict(opened)
         self.directory.mkdir(parents=True, exist_ok=True)
 
         budget = WriteBudget(
@@ -173,14 +176,23 @@ class RecordingSession:
         return self._start_latency_ms
 
     def _pump(self, track: str, stream) -> None:
-        """Drain one stream into its writer until the session stops."""
+        """Drain one stream into its writer until the session stops.
+
+        The stream is looked up each turn rather than captured once: the
+        device supervisor can swap it underneath, and a pump holding the old
+        object would keep draining a device nobody is recording from.
+        """
         writer = self._writers[track]
         while not self._halt.is_set():
+            stream = self._streams.get(track)
+            if stream is None:
+                return  # the track was ended; the recording carries on
             try:
                 packets = stream.read()
             except Exception as exc:
                 self._warnings.append(f"trilha '{track}' parou de entregar: {exc}")
-                return
+                self._halt.wait(PUMP_INTERVAL_S)
+                continue
             if packets:
                 for packet in packets:
                     try:
@@ -191,6 +203,45 @@ class RecordingSession:
             else:
                 writer.maybe_flush()
             self._halt.wait(PUMP_INTERVAL_S)
+
+    # -- devices -------------------------------------------------------
+
+    def stream_for(self, track: str):
+        return self._streams.get(track)
+
+    def writer_for(self, track: str) -> TrackWriter | None:
+        return self._writers.get(track)
+
+    def replace_stream(self, track: str, stream) -> None:
+        """Swap a track's device without touching its file or its timeline."""
+        with self._lock:
+            previous = self._streams.get(track)
+            self._streams[track] = stream
+        if previous is not None:
+            try:
+                previous.stop()
+            except Exception:
+                pass
+
+    def end_track(self, track: str) -> None:
+        """Stop one track for good. The recording continues on the other."""
+        with self._lock:
+            stream = self._streams.pop(track, None)
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+
+    def supervise_devices(self, watches) -> None:
+        """Start watching the tracks' devices for loss and for role changes."""
+        from .supervisor import DeviceSupervisor  # noqa: PLC0415
+
+        supervisor = DeviceSupervisor(self)
+        for watch in watches:
+            supervisor.watch(watch)
+        supervisor.start()
+        self.supervisor = supervisor
 
     # -- pause ---------------------------------------------------------
 
@@ -281,16 +332,18 @@ class RecordingSession:
         if self._paused.is_set():
             self.resume()
 
+        if self.supervisor is not None:
+            self.supervisor.stop()
+
         self._halt.set()
         for pump in self._pumps:
             pump.join(timeout=3.0)
 
-        for stream in (self._mic_stream, self._system_stream):
-            if stream is not None:
-                try:
-                    stream.stop()
-                except Exception:
-                    pass
+        for stream in list(self._streams.values()):
+            try:
+                stream.stop()
+            except Exception:
+                pass
 
         # Drain whatever the streams still held, including packets a stream
         # kept back while measuring its position scale.
@@ -329,6 +382,12 @@ class RecordingSession:
             "limite_aviso_ms": self.config.drift_warn_ms,
             "atraso_de_inicio_ms": round(self._start_latency_ms, 1),
         }
+        if self.supervisor is not None:
+            # A device change is a real gap in what was heard, so it belongs in
+            # the metadata with its instant and its length -- not only in a
+            # warning somebody may never read.
+            metadata.alignment["lacunas_por_dispositivo"] = self.supervisor.gaps()
+            metadata.alignment["saude_das_trilhas"] = self.supervisor.health()
         write_metadata(self.directory, metadata)
 
         finalize_session(

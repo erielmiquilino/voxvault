@@ -77,6 +77,8 @@ class TrackWriter:
         self.source_format = source_format
         self.budget = budget or WriteBudget()
         self.stats = TrackStats()
+        self._session_qpc_ns = session_qpc_ns
+        self._threshold_ms = threshold_ms
         self.placer = TrackPlacer(
             session_qpc_ns=session_qpc_ns,
             sample_rate=source_format.sample_rate,
@@ -127,6 +129,35 @@ class TrackWriter:
         import numpy as np  # noqa: PLC0415
 
         return (np.clip(remaining, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+
+    def rebind(self, source_format: StreamFormat) -> int:
+        """Continue this track on a different device, in the same file.
+
+        The gap is not filled here. The placer is rebuilt against the *same*
+        session reference and told how much of the timeline is already on
+        disk, so when the first packet of the new device arrives it computes
+        the silence itself -- by exactly the mechanism that already handles a
+        loopback track which was idle at the start. One behaviour, not two.
+
+        Returns the timeline position, in milliseconds, at which the new
+        device takes over.
+        """
+        tail = self._drain_resampler()
+        if tail:
+            self._append(tail)
+
+        already_ms = self.timeline_ms
+        self.source_format = source_format
+        self.placer = TrackPlacer(
+            session_qpc_ns=self._session_qpc_ns,
+            sample_rate=source_format.sample_rate,
+            threshold_ms=self._threshold_ms,
+        )
+        self.placer.written_frames = int(
+            already_ms * source_format.sample_rate / 1000
+        )
+        self._resampler = None
+        return already_ms
 
     @property
     def timeline_ms(self) -> int:
