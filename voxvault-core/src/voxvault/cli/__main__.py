@@ -272,9 +272,112 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if report.failed else 0
 
 
+def _service_call(rendezvous, method: str, route: str, body: dict | None = None):
+    """One request to the running service."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    from ..service.rendezvous import SECRET_HEADER
+
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        f"http://{rendezvous.endereco}{route}", data=data, method=method
+    )
+    request.add_header(SECRET_HEADER, rendezvous.segredo)
+    request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read())
+        except Exception:
+            return exc.code, {"erro": str(exc)}
+
+
+def _bar(level: float, width: int = 12) -> str:
+    filled = min(width, round(level * width))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def _record_through_service(rendezvous, args: argparse.Namespace) -> int:
+    """Drive the recording on the service that already owns the capture.
+
+    Opening our own streams would put two processes on the same microphone:
+    the machine-wide claim stops a second *service*, not a command that
+    reaches for the devices directly. So when a service is running, this
+    command becomes one of its clients like every other surface.
+    """
+    import time
+
+    status, payload = _service_call(
+        rendezvous, "POST", "/gravacao/iniciar", {"titulo": args.title}
+    )
+    if status != 200:
+        sys.stderr.write(f"{payload.get('erro', payload)}\n")
+        return 1
+
+    sys.stdout.write(
+        f"\nGravando pelo servico residente (processo {rendezvous.pid})\n"
+        f"  inicio em {payload.get('atraso_de_inicio_ms', 0):.0f} ms\n"
+        f"  Ctrl+C encerra e envia para transcricao.\n\n"
+    )
+
+    deadline = time.monotonic() + args.seconds if args.seconds > 0 else None
+    try:
+        while True:
+            time.sleep(1.0)
+            _s, estado = _service_call(rendezvous, "GET", "/gravacao")
+            niveis = estado.get("niveis") or {}
+            medidores = "  ".join(
+                f"{trilha} {_bar(dados.get('pico', 0.0))}"
+                for trilha, dados in sorted(niveis.items())
+            )
+            mudas = [
+                t for t, d in niveis.items() if d.get("silencio_ha_s", 0) > 30
+            ]
+            sys.stdout.write(
+                f"\r  {estado.get('duracao_ms', 0) / 1000:7.1f}s  "
+                f"div {estado.get('divergencia_ms', 0):4d}ms  {medidores}"
+                + (f"  MUDA: {', '.join(mudas)}" if mudas else "            ")
+            )
+            sys.stdout.flush()
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+    except KeyboardInterrupt:
+        pass
+
+    sys.stdout.write("\n\nEncerrando...\n")
+    status, fim = _service_call(rendezvous, "POST", "/gravacao/encerrar")
+    if status != 200:
+        sys.stderr.write(f"{fim.get('erro', fim)}\n")
+        return 1
+
+    sys.stdout.write(
+        f"Reuniao {fim['uid']}\n"
+        f"  duracao: {fim['duracao_ms'] / 1000:.1f}s\n"
+        f"  trilhas: "
+        + ", ".join(f"{t} {d / 1000:.1f}s" for t, d in fim["trilhas"].items())
+        + f"\n  divergencia final: {fim['divergencia_ms']} ms\n"
+    )
+    for aviso in fim.get("avisos") or []:
+        sys.stdout.write(f"  aviso: {aviso}\n")
+    sys.stdout.write("\nEnfileirada. Rode 'voxvault queue --run' para transcrever.\n")
+    return 0
+
+
 def _cmd_record(args: argparse.Namespace) -> int:
     import time
     from datetime import datetime
+
+    from ..service.rendezvous import live_rendezvous
+
+    # A running service already owns the capture. Reaching for the devices
+    # here anyway would put two processes on the same microphone.
+    running = live_rendezvous()
+    if running is not None:
+        return _record_through_service(running, args)
 
     from ..capture.devices import (
         FLOW_CAPTURE,
