@@ -11,9 +11,9 @@ nas duas colunas. Onde não está, o motivo está dito.
 
 | | |
 |---|---|
-| Testes | 433 passando, 9 pulados (exigem hardware ausente agora) |
+| Testes | 436 em Python e 5 em Rust, todos passando; 9 pulados (exigem hardware ausente agora) |
 | Lint | `ruff` limpo em `src` e `tests` |
-| Código | 14.492 linhas em `src`, 8.331 em `tests` |
+| Código | 21.281 linhas de fonte entre núcleo e aplicativo, 8.331 de teste |
 | Subida da linha de comando | 213 ms |
 | Subida do servidor MCP | 1,0 s, sem carregar numpy, soxr, soundfile nem runtime de inferência |
 
@@ -110,19 +110,36 @@ O diagnóstico avisa enquanto isso não for feito.
 
 ## Fase 3 — aplicativo desktop
 
-**Construído e executando.** Tauri 2 + Svelte 5, 39 pacotes npm, 5 dependências
-Rust, binário de 3,30 MB. Custo medido em 82 amostras sobre 9 processos:
-**0,72% a 1,47% de CPU e ~430 MB** — contra tetos de 8% em média e 700 MB.
+**Construído, ligado ao núcleo e verificado.** Tauri 2 + Svelte 5, 39 pacotes
+npm, 5 dependências Rust, binário de 3,59 MB mais instalador.
 
-Ressalvas do próprio agente que o construiu, e que continuam válidas: a medição
-correu sem gravação em andamento, então o custo da captura não está
-representado; e a carga da interface foi gerada no teto de 20 Hz por trilha, o
-que faz dessa fatia um limite superior.
+Verificado dirigindo a janela real sobre o depurador do WebView2, contra os
+dados de teste: cinco reuniões listadas com estado real, linha de tempo com
+atribuição correta, clicar num segmento move o áudio para o instante certo,
+busca achando transcrição e nota, renomear aplicando e a lista atualizando,
+remoção de nota pelo diálogo. Nenhum erro de página.
+
+Custo medido em 81 amostras sobre 9 processos: **1,14% de CPU em média, 1,66%
+na pior janela de um minuto, 435 MB em média e 556 MB de pico** — contra tetos
+de 8%, 15% e 700 MB.
+
+Ressalvas que continuam válidas: a medição correu sem gravação em andamento,
+então o custo da captura não está representado; a carga da interface foi gerada
+no teto de 20 Hz por trilha, o que faz dessa fatia um limite superior; e a
+contagem de processos variou entre 9 e 17 porque o serviço do teste paralelo
+trabalhava durante a janela.
 
 ## Fase 4 — conveniências
 
-**Detecção de reunião implementada e coberta**; bandeja, atalho global e
-notificações vivem no aplicativo.
+**Completa.** Detecção de reunião no núcleo, bandeja e atalho global no
+aplicativo.
+
+A bandeja abre, alterna gravação e fecha; o atalho **Alt+Shift+R** passa pelo
+serviço, então uma gravação iniciada pela linha de comando é encerrada pelo
+mesmo atalho. A sugestão de início nunca começa a gravar sozinha.
+
+Limite declarado: a bandeja morre com a janela, então a detecção só observa
+enquanto o aplicativo está aberto.
 
 O sinal vem do mesmo registro que o Windows usa para o indicador "um aplicativo
 está usando seu microfone". Ele dá caminho de executável e dois instantes, e
@@ -153,6 +170,27 @@ hoje em toda transcrição futura daquela reunião.
 **Disponibilidade da transcrição e estado da tentativa são campos separados.**
 Uma reunião sendo reprocessada tem transcrição completa disponível *e* uma
 tentativa em andamento. Um estado único obrigaria a mentir sobre um dos dois.
+
+## Um defeito que só apareceu ao ligar as peças
+
+O serviço **nunca podia ser encerrado pela própria rota de encerramento**.
+Encontrado pelo agente que construiu o aplicativo, ao notar que `/saude` dizia
+`fila_pendente: 0` enquanto `serve --stop` recusava alegando reuniões na fila.
+
+A causa: o despachante HTTP marca presença de cliente em toda requisição,
+incluindo a própria `/encerrar`. A verificação de "está ocupado" contava um
+cliente conectado como motivo para recusar, então o pedido se invalidava
+sozinho — sempre — e, como não havia gravação, a mensagem caía no ramo errado e
+culpava a fila vazia.
+
+Eram duas perguntas coladas numa só. "Não encerre por ociosidade" inclui um
+cliente conectado, e deve mesmo. "Não honre um pedido explícito" inclui apenas
+gravação ativa ou fila pendente. Agora são duas verificações, e a recusa nomeia
+o motivo real.
+
+Vale registrar como foi encontrado: nenhum teste unitário o pegaria, porque
+cada peça estava certa isolada. Apareceu porque duas superfícies discordaram
+sobre o mesmo fato.
 
 ## O que bloqueia o fechamento
 
