@@ -4,8 +4,8 @@ Each migration is a tuple of individual statements, never a script: a script
 would issue an implicit COMMIT and break the single transaction that makes
 migration atomic and serialisable between processes.
 
-No migration may drop a meeting, a segment or an audio reference. Adding
-columns and rebuilding derived indexes is allowed; discarding recorded
+No migration may drop a meeting, a segment, a note or an audio reference.
+Adding columns and rebuilding derived indexes is allowed; discarding recorded
 material is not.
 """
 
@@ -17,7 +17,7 @@ from typing import Final
 #: Highest schema version this build understands. A database above it is
 #: refused, because a newer build may have given an existing column a new
 #: meaning that this one would silently misread.
-SCHEMA_VERSION: Final = 2
+SCHEMA_VERSION: Final = 3
 
 _V1_CORE: Final[tuple[str, ...]] = (
     """
@@ -146,15 +146,82 @@ _V2_SEARCH: Final[tuple[str, ...]] = (
     """,
 )
 
+#: Notes are purely additive: nothing above is touched, so a database that
+#: already holds meetings and segments crosses this migration unchanged.
+#:
+#: Notes get an index of their own rather than sharing ``segments_fts``. The
+#: two tables number their rows independently, so one shared index would need
+#: a composite rowid to tell note 7 from segment 7 -- and bolting that onto an
+#: index that already works is a good way to lose a transcript to a collision.
+#:
+#: The tokenizer is copied from the segment index on purpose, not by accident:
+#: a note that only answers to accented spelling while the transcript answers
+#: to both would be a search that behaves differently depending on what it
+#: finds, which is worse than one that simply fails.
+#:
+#: Two rules are CHECK constraints rather than Python: the closed set of note
+#: types, and the requirement that an automated author name its client. Both
+#: have to hold for rows written by builds that do not exist yet.
+_V3_NOTES: Final[tuple[str, ...]] = (
+    """
+    CREATE TABLE notes (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        uid           TEXT    NOT NULL UNIQUE,
+        meeting_id    INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+        kind          TEXT    NOT NULL
+                              CHECK (kind IN ('resumo', 'decisoes',
+                                              'pendencias', 'livre')),
+        content       TEXT    NOT NULL,
+        author_kind   TEXT    NOT NULL
+                              CHECK (author_kind IN ('usuario', 'agente')),
+        author_client TEXT    NOT NULL DEFAULT '',
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        CHECK (author_kind <> 'agente' OR author_client <> '')
+    )
+    """,
+    # Covering for the listing order the notes of a meeting are read in:
+    # creation instant, tie-broken by row, which is total.
+    "CREATE INDEX idx_notes_meeting ON notes(meeting_id, created_at_ms, id)",
+    """
+    CREATE VIRTUAL TABLE notes_fts USING fts5(
+        content,
+        meeting_id UNINDEXED,
+        tokenize = 'unicode61 remove_diacritics 2'
+    )
+    """,
+    # The index follows a deletion structurally. The store deletes notes one
+    # at a time and could do this itself, but the foreign key above also
+    # deletes them in bulk when a meeting goes, and that path runs inside
+    # SQLite where no Python statement of ours is involved.
+    """
+    CREATE TRIGGER notes_fts_follows_delete
+    AFTER DELETE ON notes
+    FOR EACH ROW
+    BEGIN
+        DELETE FROM notes_fts WHERE rowid = OLD.id;
+    END
+    """,
+)
+
 MIGRATIONS: Final[tuple[tuple[int, tuple[str, ...]], ...]] = (
     (1, _V1_CORE),
     (2, _V2_SEARCH),
+    (3, _V3_NOTES),
 )
 
 #: Tables a fully migrated database must contain. Used by the store's own
 #: consistency check and by the schema test.
 EXPECTED_TABLES: Final = frozenset(
-    {"meetings", "revisions", "segments", "segments_fts", "schema_migrations"}
+    {
+        "meetings",
+        "revisions",
+        "segments",
+        "segments_fts",
+        "notes",
+        "notes_fts",
+        "schema_migrations",
+    }
 )
 
 

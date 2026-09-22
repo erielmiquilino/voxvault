@@ -292,6 +292,23 @@ class RecordingSession:
                 except Exception:
                     pass
 
+        # Drain whatever the streams still held, including packets a stream
+        # kept back while measuring its position scale.
+        for track, stream in (
+            (Track.MIC.value, self._mic_stream),
+            (Track.SYSTEM.value, self._system_stream),
+        ):
+            writer = self._writers.get(track)
+            if stream is None or writer is None:
+                continue
+            try:
+                for packet in stream.read():
+                    writer.write_packet(packet)
+            except Exception:
+                pass
+
+        self._pad_tracks_to_equal_length()
+
         duration = self.duration_ms
         drift = self.drift_ms
         stats = self.track_stats()
@@ -325,6 +342,39 @@ class RecordingSession:
         self._duration_at_stop = duration
         self._drift_at_stop = drift
         return self._report()
+
+    def _pad_tracks_to_equal_length(self) -> None:
+        """Bring every track up to the longest one, with silence.
+
+        The case this exists for is the ordinary one: the loopback endpoint
+        delivers nothing at all while nothing is playing, so a meeting where
+        the other participants never made a sound -- or where the output went
+        somewhere else -- ends with a system track of zero length. Two files of
+        different lengths do not describe one timeline, and anything reading
+        them afterwards would place the second track's speech at the wrong
+        instant.
+
+        Silence here is the honest content: those seconds really were silent
+        on that track.
+        """
+        if len(self._writers) < 2:
+            return
+        longest = max(w.timeline_ms for w in self._writers.values())
+        for track, writer in self._writers.items():
+            missing = longest - writer.timeline_ms
+            if missing <= 0:
+                continue
+            had_audio = writer.stats.frames_written > 0
+            writer.write_silence_ms(missing)
+            writer.placer.written_frames += int(
+                missing * writer.source_format.sample_rate / 1000
+            )
+            if not had_audio:
+                self._warnings.append(
+                    f"a trilha '{track}' nao recebeu audio algum e foi "
+                    f"preenchida com {missing / 1000:.1f}s de silencio para "
+                    f"manter o alinhamento com a outra trilha"
+                )
 
     def _report(self) -> SessionReport:
         return SessionReport(

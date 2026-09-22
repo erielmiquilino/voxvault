@@ -45,6 +45,21 @@ from .models import (
     speaker_for,
     to_ms,
 )
+from .notes import (
+    NATURE_NOTE,
+    NATURE_TRANSCRIPT,
+    NOTE_COLUMNS,
+    Note,
+    NoteAuthor,
+    NoteHit,
+    NoteKind,
+    SearchScope,
+    author_from_row,
+    clean_content,
+    coerce_kind,
+    coerce_scope,
+    note_from_row,
+)
 
 #: Tracks a meeting is expected to have. Completeness of a revision is decided
 #: against this, not against whatever the caller happened to attempt.
@@ -668,78 +683,260 @@ class TranscriptStore:
     def cursor_of(entry: TimelineEntry) -> TimelineCursor:
         return (entry.start_ms, str(entry.track), entry.segment_id)
 
+    # -- notes -----------------------------------------------------------
+
+    def create_note(
+        self,
+        meeting_uid: str,
+        *,
+        kind: NoteKind | str,
+        content: str,
+        author: NoteAuthor,
+        uid: str | None = None,
+    ) -> Note:
+        """Record one reading of a meeting, beside the meeting and never in it.
+
+        Nothing about the meeting, its revisions, its segments or its audio is
+        touched: the only statements here insert into ``notes`` and its index.
+
+        Several notes of the same type may live on one meeting, and this is
+        the reason there is no upsert. A second summary is a second opinion,
+        possibly written months later by a different client; making it
+        overwrite the first would destroy work that nothing else holds a copy
+        of.
+
+        The meeting is looked up inside the write transaction rather than
+        before it, so "the meeting exists" is decided at the same instant the
+        note is written and not a moment earlier.
+        """
+        note_kind = coerce_kind(kind)
+        body = clean_content(content)
+        note_uid = uid or uuid.uuid4().hex
+        moment = now_ms()
+        with self._write():
+            row = self._conn.execute(
+                "SELECT id FROM meetings WHERE uid = ?", (meeting_uid,)
+            ).fetchone()
+            if row is None:
+                raise StorageError(
+                    f"Reuniao '{meeting_uid}' nao encontrada no armazenamento. "
+                    f"Nenhuma nota foi criada."
+                )
+            try:
+                cursor = self._conn.execute(
+                    "INSERT INTO notes("
+                    " uid, meeting_id, kind, content, author_kind, author_client,"
+                    " created_at_ms, updated_at_ms)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        note_uid,
+                        row["id"],
+                        note_kind.value,
+                        body,
+                        author.kind.value,
+                        author.client,
+                        moment,
+                        moment,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise StorageError(
+                    f"Nao foi possivel gravar a nota '{note_uid}': {exc}"
+                ) from None
+            # The index moves inside the same transaction as the row, exactly
+            # as it does when a revision is published. A rollback takes both.
+            self._conn.execute(
+                "INSERT INTO notes_fts(rowid, content, meeting_id) VALUES (?, ?, ?)",
+                (cursor.lastrowid, body, row["id"]),
+            )
+        note = self.get_note(note_uid)
+        assert note is not None
+        return note
+
+    def update_note(self, note_uid: str, *, content: str) -> Note:
+        """Replace a note's text, keeping everything that identifies it.
+
+        The UPDATE names three columns and no others, which is what preserves
+        the identifier, the original authorship and the creation instant. Only
+        the last-changed instant moves.
+        """
+        body = clean_content(content)
+        moment = now_ms()
+        with self._write():
+            row = self._conn.execute(
+                "SELECT id FROM notes WHERE uid = ?", (note_uid,)
+            ).fetchone()
+            if row is None:
+                raise StorageError(
+                    f"Nota '{note_uid}' nao encontrada no armazenamento. "
+                    f"Nada foi alterado."
+                )
+            self._conn.execute(
+                "UPDATE notes SET content = ?, updated_at_ms = ? WHERE id = ?",
+                (body, moment, row["id"]),
+            )
+            self._conn.execute(
+                "DELETE FROM notes_fts WHERE rowid = ?", (row["id"],)
+            )
+            self._conn.execute(
+                "INSERT INTO notes_fts(rowid, content, meeting_id)"
+                " SELECT id, content, meeting_id FROM notes WHERE id = ?",
+                (row["id"],),
+            )
+        note = self.get_note(note_uid)
+        assert note is not None
+        return note
+
+    def delete_note(self, note_uid: str) -> None:
+        """Remove one note. The index follows through the delete trigger."""
+        with self._write():
+            cursor = self._conn.execute(
+                "DELETE FROM notes WHERE uid = ?", (note_uid,)
+            )
+            if cursor.rowcount == 0:
+                raise StorageError(
+                    f"Nota '{note_uid}' nao encontrada no armazenamento. "
+                    f"Nada foi removido."
+                )
+
+    def get_note(self, note_uid: str) -> Note | None:
+        row = self._conn.execute(
+            f"SELECT {NOTE_COLUMNS} FROM notes n"
+            f" JOIN meetings m ON m.id = n.meeting_id"
+            f" WHERE n.uid = ?",
+            (note_uid,),
+        ).fetchone()
+        return None if row is None else note_from_row(row)
+
+    def notes_of(
+        self,
+        meeting_uid: str,
+        *,
+        kind: NoteKind | str | None = None,
+        limit: int | None = None,
+    ) -> list[Note]:
+        """Every note of a meeting, oldest first.
+
+        Chronological and not by relevance: several notes of the same type are
+        allowed, so the order in which they were written is the only thing
+        that says which reading came after which.
+        """
+        self._require_meeting(meeting_uid)
+        sql = [
+            f"SELECT {NOTE_COLUMNS} FROM notes n",
+            " JOIN meetings m ON m.id = n.meeting_id",
+            " WHERE m.uid = ?",
+        ]
+        params: list[Any] = [meeting_uid]
+        if kind is not None:
+            sql.append("   AND n.kind = ?")
+            params.append(coerce_kind(kind).value)
+        sql.append(" ORDER BY n.created_at_ms, n.id")
+        if limit is not None:
+            sql.append(" LIMIT ?")
+            params.append(limit)
+        return [note_from_row(r) for r in self._conn.execute("\n".join(sql), params)]
+
+    def resolve_note_uid(self, prefix: str) -> str:
+        """Expand a unique prefix of a note identifier, as git expands a hash.
+
+        ``substr`` and not ``LIKE``: a prefix is a literal, and ``LIKE`` would
+        read a stray ``%`` in it as a wildcard.
+        """
+        if not prefix:
+            raise StorageError("Informe ao menos um caractere do identificador.")
+        matches = [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT uid FROM notes WHERE substr(uid, 1, ?) = ? ORDER BY uid",
+                (len(prefix), prefix),
+            )
+        ]
+        if not matches:
+            raise StorageError(f"Nenhuma nota comeca com '{prefix}'.")
+        if len(matches) > 1:
+            raise StorageError(
+                f"'{prefix}' e ambiguo: {len(matches)} notas comecam assim."
+            )
+        return matches[0]
+
     # -- search ----------------------------------------------------------
 
     def search(
         self,
         query: str,
         *,
+        scope: SearchScope | str = SearchScope.TRANSCRIPTS,
         meeting_uid: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 50,
         context_tokens: int = 12,
-    ) -> list[SearchHit]:
-        """Full-text search over every segment of every active revision.
+    ) -> list[SearchHit | NoteHit]:
+        """Full-text search over the history, transcripts and notes alike.
 
-        Case and accents are irrelevant in both directions: the tokenizer
-        strips diacritics from the stored text and from the query alike.
+        Case and accents are irrelevant in both directions, for notes exactly
+        as for segments: both indexes strip diacritics from the stored text
+        and from the query, so "acao" finds "ação" and "ação" finds "acao".
 
         The user's words are quoted before reaching FTS5, so a hyphen, a colon
         or a stray quote is searched for rather than parsed as operator syntax.
+
+        ``scope`` restricts the search to transcripts, to notes, or takes
+        both. The result is a mixed list; every element answers ``nature``
+        with ``'transcricao'`` or ``'nota'``, and a note result carries its
+        identifier, its type and its authorship. A note result has no instant,
+        no track and no speaker, because a note has none.
+
+        The default is transcripts, which is what this method meant before
+        notes existed and what the surfaces that already call it render.
+        Anything that wants notes asks for them.
+
+        Relevance is bm25 within each index. The two corpora differ in typical
+        length, so the two scores are comparable in the loose sense that both
+        rank better matches first, not in the strict sense of one scale.
         """
+        wanted = coerce_scope(scope)
         match = _fts_query(query)
         if not match:
             return []
-        sql = [
-            "SELECT s.id AS segment_id, s.start_ms, s.end_ms, s.track, s.speaker,",
-            "       s.text AS text,",
-            f"       snippet(segments_fts, 0, '[', ']', '...', {int(context_tokens)})"
-            "        AS excerpt,",
-            "       m.uid AS meeting_uid, m.title AS meeting_title,",
-            "       m.started_at_ms AS meeting_started_at_ms",
-            "  FROM segments_fts",
-            "  JOIN segments s ON s.id = segments_fts.rowid",
-            "  JOIN meetings m ON m.id = s.meeting_id",
-            " WHERE segments_fts MATCH ?",
-            # Belt and braces: the index only ever holds active segments, and
-            # this makes a stale row unable to surface even so.
-            "   AND s.revision_id = m.active_revision_id",
-        ]
-        params: list[Any] = [match]
-        if meeting_uid is not None:
-            sql.append("   AND m.uid = ?")
-            params.append(meeting_uid)
-        if since is not None:
-            sql.append("   AND m.started_at_ms >= ?")
-            params.append(to_ms(since))
-        if until is not None:
-            sql.append("   AND m.started_at_ms <= ?")
-            params.append(to_ms(until))
-        sql.append(" ORDER BY bm25(segments_fts), m.started_at_ms DESC, s.start_ms")
-        sql.append(" LIMIT ?")
+        arms: list[str] = []
+        params: list[Any] = []
+        sources = []
+        if wanted is not SearchScope.NOTES:
+            sources.append(_TRANSCRIPT_ARM)
+        if wanted is not SearchScope.TRANSCRIPTS:
+            sources.append(_NOTE_ARM)
+        for template in sources:
+            arm, arm_params = _search_arm(
+                template,
+                context_tokens=context_tokens,
+                match=match,
+                meeting_uid=meeting_uid,
+                since=since,
+                until=until,
+            )
+            arms.append(arm)
+            params += arm_params
+        sql = (
+            "SELECT * FROM (\n"
+            + "\nUNION ALL\n".join(arms)
+            + "\n)"
+            # A total order, so two calls never disagree about the page they
+            # return: relevance, then recency, then the identifier.
+            + "\n ORDER BY relevancia, meeting_started_at_ms DESC, nature,"
+            "\n          COALESCE(start_ms, created_at_ms),"
+            "\n          COALESCE(segment_id, 0), COALESCE(note_uid, '')"
+            "\n LIMIT ?"
+        )
         params.append(limit)
         try:
-            rows = self._conn.execute("\n".join(sql), params).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         except sqlite3.OperationalError as exc:
             raise StorageError(
                 f"Consulta de busca invalida ({query!r}): {exc}"
             ) from None
-        return [
-            SearchHit(
-                meeting_uid=r["meeting_uid"],
-                meeting_title=r["meeting_title"],
-                meeting_started_at_ms=r["meeting_started_at_ms"],
-                segment_id=r["segment_id"],
-                start_ms=r["start_ms"],
-                end_ms=r["end_ms"],
-                track=r["track"],
-                speaker=r["speaker"],
-                excerpt=r["excerpt"],
-                text=r["text"],
-            )
-            for r in rows
-        ]
+        return [_hit(r) for r in rows]
 
     # -- diagnostics -----------------------------------------------------
 
@@ -782,6 +979,32 @@ class TranscriptStore:
             )
         ]
 
+    def orphan_note_index_rows(self) -> list[int]:
+        """Rowids in the note index with no note behind them. Always empty.
+
+        An inner join hides an orphan from every query, which is exactly why
+        it needs a diagnostic: it would rot unnoticed otherwise.
+        """
+        return [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT f.rowid FROM notes_fts f"
+                " LEFT JOIN notes n ON n.id = f.rowid"
+                " WHERE n.id IS NULL"
+            )
+        ]
+
+    def unindexed_notes(self) -> list[int]:
+        """Notes missing from the note index. Must always be empty."""
+        return [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT n.id FROM notes n"
+                " LEFT JOIN notes_fts f ON f.rowid = n.id"
+                " WHERE f.rowid IS NULL"
+            )
+        ]
+
     # -- internals -------------------------------------------------------
 
     def _require_meeting(self, uid: str) -> Meeting:
@@ -795,6 +1018,120 @@ class TranscriptStore:
         if revision is None:
             raise StorageError(f"Revisao {revision_id} nao encontrada.")
         return revision
+
+
+#: The two halves of a search, projected onto one row shape so they can be
+#: taken together. Every column is aliased in both arms: in a compound SELECT
+#: the names come from the first one, and the first one depends on the scope.
+#:
+#: The slots a note cannot fill are NULL rather than zero. A note has no
+#: instant and no speaker, and a zero there is how a summary ends up rendered
+#: as if someone had said it at the start of the meeting.
+_TRANSCRIPT_ARM: Final = """
+SELECT 'transcricao'           AS nature,
+       m.uid                   AS meeting_uid,
+       m.title                 AS meeting_title,
+       m.started_at_ms         AS meeting_started_at_ms,
+       bm25(segments_fts)      AS relevancia,
+       s.id                    AS segment_id,
+       s.start_ms              AS start_ms,
+       s.end_ms                AS end_ms,
+       s.track                 AS track,
+       s.speaker               AS speaker,
+       NULL                    AS note_uid,
+       NULL                    AS kind,
+       NULL                    AS author_kind,
+       NULL                    AS author_client,
+       NULL                    AS created_at_ms,
+       NULL                    AS updated_at_ms,
+       snippet(segments_fts, 0, '[', ']', '...', {context}) AS excerpt,
+       s.text                  AS text
+  FROM segments_fts
+  JOIN segments s ON s.id = segments_fts.rowid
+  JOIN meetings m ON m.id = s.meeting_id
+ WHERE segments_fts MATCH ?
+   AND s.revision_id = m.active_revision_id"""
+
+_NOTE_ARM: Final = """
+SELECT 'nota'                  AS nature,
+       m.uid                   AS meeting_uid,
+       m.title                 AS meeting_title,
+       m.started_at_ms         AS meeting_started_at_ms,
+       bm25(notes_fts)         AS relevancia,
+       NULL                    AS segment_id,
+       NULL                    AS start_ms,
+       NULL                    AS end_ms,
+       NULL                    AS track,
+       NULL                    AS speaker,
+       n.uid                   AS note_uid,
+       n.kind                  AS kind,
+       n.author_kind           AS author_kind,
+       n.author_client         AS author_client,
+       n.created_at_ms         AS created_at_ms,
+       n.updated_at_ms         AS updated_at_ms,
+       snippet(notes_fts, 0, '[', ']', '...', {context}) AS excerpt,
+       n.content               AS text
+  FROM notes_fts
+  JOIN notes n ON n.id = notes_fts.rowid
+  JOIN meetings m ON m.id = n.meeting_id
+ WHERE notes_fts MATCH ?"""
+
+
+def _search_arm(
+    template: str,
+    *,
+    context_tokens: int,
+    match: str,
+    meeting_uid: str | None,
+    since: datetime | None,
+    until: datetime | None,
+) -> tuple[str, list[Any]]:
+    """One half of a search, with the filters that apply to both halves.
+
+    ``context_tokens`` is interpolated because FTS5 takes the snippet width as
+    a literal and not as a binding; it is forced through ``int`` first.
+    """
+    sql = [template.format(context=int(context_tokens))]
+    params: list[Any] = [match]
+    if meeting_uid is not None:
+        sql.append("   AND m.uid = ?")
+        params.append(meeting_uid)
+    if since is not None:
+        sql.append("   AND m.started_at_ms >= ?")
+        params.append(to_ms(since))
+    if until is not None:
+        sql.append("   AND m.started_at_ms <= ?")
+        params.append(to_ms(until))
+    return "\n".join(sql), params
+
+
+def _hit(row: sqlite3.Row) -> SearchHit | NoteHit:
+    """One search row as whichever kind of result it actually is."""
+    if row["nature"] == NATURE_NOTE:
+        return NoteHit(
+            meeting_uid=row["meeting_uid"],
+            meeting_title=row["meeting_title"],
+            meeting_started_at_ms=row["meeting_started_at_ms"],
+            note_uid=row["note_uid"],
+            kind=NoteKind(row["kind"]),
+            author=author_from_row(row),
+            created_at_ms=row["created_at_ms"],
+            updated_at_ms=row["updated_at_ms"],
+            excerpt=row["excerpt"],
+            text=row["text"],
+        )
+    return SearchHit(
+        meeting_uid=row["meeting_uid"],
+        meeting_title=row["meeting_title"],
+        meeting_started_at_ms=row["meeting_started_at_ms"],
+        segment_id=row["segment_id"],
+        start_ms=row["start_ms"],
+        end_ms=row["end_ms"],
+        track=row["track"],
+        speaker=row["speaker"],
+        excerpt=row["excerpt"],
+        text=row["text"],
+    )
 
 
 def _fts_query(raw: str) -> str:

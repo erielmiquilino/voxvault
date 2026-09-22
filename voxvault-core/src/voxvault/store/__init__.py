@@ -9,6 +9,8 @@ Reading order for anyone new to this package:
     serialisation, and the short write transaction with its contention budget.
 ``store.py``
     The queries and the revision rules.
+``notes.py``
+    What a note is, and why it is never a segment.
 ``writer.py``
     Why the audio capture path never waits on the database.
 ``exporting.py``
@@ -30,12 +32,16 @@ from .connection import (
     in_capture_path,
 )
 from .exporting import (
+    NOTES_HEADING,
     READABLE_NAME,
     STRUCTURED_NAME,
+    STRUCTURED_VERSION,
+    TIMELINE_HEADING,
     current_export_paths,
     export_paths,
     export_status,
     load_structured,
+    notes_from_structured,
     recorded_revision_uid,
     reconcile_exports,
     regenerate_exports,
@@ -44,6 +50,8 @@ from .exporting import (
     timeline_from_structured,
 )
 from .models import (
+    NATURE_NOTE,
+    NATURE_TRANSCRIPT,
     SPEAKER_UNKNOWN,
     TRACK_IMPORTED,
     ExportStatus,
@@ -58,6 +66,14 @@ from .models import (
     now_ms,
     speaker_for,
     to_ms,
+)
+from .notes import (
+    Note,
+    NoteAuthor,
+    NoteAuthorKind,
+    NoteHit,
+    NoteKind,
+    SearchScope,
 )
 from .schema import SCHEMA_VERSION
 from .store import TranscriptStore
@@ -77,6 +93,14 @@ __all__ = [
     "DEFAULT_MIGRATION_TIMEOUT_S",
     "ExportStatus",
     "Meeting",
+    "NATURE_NOTE",
+    "NATURE_TRANSCRIPT",
+    "NOTES_HEADING",
+    "Note",
+    "NoteAuthor",
+    "NoteAuthorKind",
+    "NoteHit",
+    "NoteKind",
     "Origin",
     "PublishOutcome",
     "READABLE_NAME",
@@ -85,10 +109,13 @@ __all__ = [
     "SCHEMA_VERSION",
     "SPEAKER_UNKNOWN",
     "STRUCTURED_NAME",
+    "STRUCTURED_VERSION",
     "SchemaTooNewError",
     "SearchHit",
+    "SearchScope",
     "StorageBusyError",
     "StorageError",
+    "TIMELINE_HEADING",
     "TRACK_IMPORTED",
     "TranscriptState",
     "TranscriptStore",
@@ -104,6 +131,7 @@ __all__ = [
     "in_capture_path",
     "load_structured",
     "merge",
+    "notes_from_structured",
     "now_ms",
     "order_key",
     "overlapping_ids",

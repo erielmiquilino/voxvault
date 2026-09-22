@@ -65,6 +65,31 @@ def _build_parser() -> argparse.ArgumentParser:
     search.add_argument("-n", "--limit", type=int, default=20)
     search.set_defaults(handler=_cmd_search)
 
+    # The accepted note types are spelled out here instead of read from
+    # ``NoteKind``: importing the store to build the parser would put its cost
+    # on every invocation, `--help` included. A test keeps the two in step.
+    notes = sub.add_parser(
+        "notes", help="Lista, cria, atualiza e remove notas de uma reuniao."
+    )
+    notes_sub = notes.add_subparsers(dest="notes_command", required=True)
+    notes_list = notes_sub.add_parser("list", help="Lista as notas de uma reuniao.")
+    notes_list.add_argument("uid")
+    notes_add = notes_sub.add_parser("add", help="Grava uma nota numa reuniao.")
+    notes_add.add_argument("uid")
+    notes_add.add_argument(
+        "--type", required=True, metavar="TIPO",
+        help="Tipo da nota: resumo, decisoes, pendencias ou livre.",
+    )
+    notes_add.add_argument("--content", required=True, metavar="TEXTO")
+    notes_update = notes_sub.add_parser(
+        "update", help="Substitui o conteudo de uma nota existente."
+    )
+    notes_update.add_argument("id", help="Identificador da nota, ou um prefixo unico.")
+    notes_update.add_argument("--content", required=True, metavar="TEXTO")
+    notes_remove = notes_sub.add_parser("remove", help="Remove uma nota.")
+    notes_remove.add_argument("id", help="Identificador da nota, ou um prefixo unico.")
+    notes.set_defaults(handler=_cmd_notes)
+
     export = sub.add_parser("export", help="Regenera as exportacoes de uma reuniao.")
     export.add_argument("uid")
     export.set_defaults(handler=_cmd_export)
@@ -373,6 +398,67 @@ def _cmd_search(args: argparse.Namespace) -> int:
                 f"{hit.meeting_uid[:8]}  [{_stamp(hit.start_ms)}]  "
                 f"{hit.meeting_title[:30]:<30}  {hit.excerpt.strip()[:80]}\n"
             )
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_notes(args: argparse.Namespace) -> int:
+    """Notes are interpretation, so nothing here touches a transcript.
+
+    Every write path ends by regenerating the exports, because the readable
+    and structured files carry the notes and stop being true the moment one
+    changes. A meeting with no active revision has nothing to export and is
+    skipped rather than failed.
+    """
+    from ..store import NoteAuthor, regenerate_exports  # noqa: PLC0415
+
+    config = _load(args)
+    store = _open_store(config)
+    try:
+        touched = ""
+        if args.notes_command == "list":
+            uid = _resolve_uid(store, args.uid)
+            notes = store.notes_of(uid)
+            if not notes:
+                sys.stdout.write("Nenhuma nota nessa reuniao.\n")
+                return 0
+            for note in notes:
+                resumo = " ".join(note.content.split())
+                sys.stdout.write(
+                    f"{note.uid[:8]}  {note.created_at.astimezone():%d/%m/%Y %H:%M}  "
+                    f"{str(note.kind):<11}  {note.author.describe()[:24]:<24}  "
+                    f"{resumo[:60]}\n"
+                )
+            return 0
+
+        if args.notes_command == "add":
+            touched = _resolve_uid(store, args.uid)
+            note = store.create_note(
+                touched,
+                kind=args.type,
+                content=args.content,
+                author=NoteAuthor.user(),
+            )
+            sys.stdout.write(
+                f"Nota {note.uid} criada em {touched} (tipo {note.kind}).\n"
+            )
+        elif args.notes_command == "update":
+            note = store.update_note(
+                store.resolve_note_uid(args.id), content=args.content
+            )
+            touched = note.meeting_uid
+            sys.stdout.write(f"Nota {note.uid} atualizada.\n")
+        else:
+            note_uid = store.resolve_note_uid(args.id)
+            note = store.get_note(note_uid)
+            touched = note.meeting_uid
+            store.delete_note(note_uid)
+            sys.stdout.write(f"Nota {note_uid} removida de {touched}.\n")
+
+        if store.active_revision(touched) is not None:
+            regenerate_exports(store, touched)
+            sys.stdout.write("Exportacoes regeneradas.\n")
     finally:
         store.close()
     return 0

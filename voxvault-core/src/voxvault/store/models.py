@@ -38,6 +38,13 @@ TRACK_IMPORTED: Final = "importada"
 #: tie-break is the lexicographic order of these strings, which is total.
 VALID_TRACKS: Final = frozenset({Track.MIC.value, Track.SYSTEM.value, TRACK_IMPORTED})
 
+#: What a piece of found text is. A transcript is a record of what was said; a
+#: note is somebody's reading of it. Every search result answers with one of
+#: these, because a surface that cannot tell them apart will eventually
+#: present interpretation as evidence.
+NATURE_TRANSCRIPT: Final = "transcricao"
+NATURE_NOTE: Final = "nota"
+
 
 class Origin(enum.StrEnum):
     """Where a meeting's audio came from."""
@@ -184,6 +191,14 @@ class PublishOutcome:
 
 @dataclass(frozen=True, slots=True)
 class SearchHit:
+    """A search result that came from a transcribed segment.
+
+    ``nature`` is what tells it apart from a note result without an
+    ``isinstance``. It is a property and not a field so that the two kinds of
+    result answer the same question while staying different shapes -- a note
+    has no instant, no track and no speaker.
+    """
+
     meeting_uid: str
     meeting_title: str
     meeting_started_at_ms: int
@@ -198,6 +213,10 @@ class SearchHit:
     @property
     def meeting_started_at(self) -> datetime:
         return from_ms(self.meeting_started_at_ms)
+
+    @property
+    def nature(self) -> str:
+        return NATURE_TRANSCRIPT
 
 
 @dataclass(frozen=True, slots=True)

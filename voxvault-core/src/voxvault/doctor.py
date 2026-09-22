@@ -197,8 +197,30 @@ def _check_capture() -> DiagnosticItem:
             remedy="Conecte um microfone e um dispositivo de saida.",
         )
 
-    default_out = next((e for e in outputs if e.default_for), None)
     detail = f"{len(inputs)} entrada(s) e {len(outputs)} saida(s) ativas"
+
+    # The two roles can point at different devices, and on this machine they
+    # do. VoxVault follows the communications role because that is what a
+    # meeting client follows -- but anything played outside the meeting goes to
+    # the multimedia default, and the system track would never hear it. Worth
+    # saying before a meeting, not after.
+    comms = next((e for e in outputs if "comunicacoes" in e.default_for), None)
+    multimedia = next((e for e in outputs if "multimidia" in e.default_for), None)
+    if comms is not None and multimedia is not None and comms.id != multimedia.id:
+        return DiagnosticItem(
+            "captura", "Captura de audio", "aviso",
+            f"{detail}. O padrao de comunicacoes ('{comms.name}') e o de "
+            f"multimidia ('{multimedia.name}') sao dispositivos diferentes. "
+            f"A trilha do sistema segue o de comunicacoes, que e o que os "
+            f"aplicativos de reuniao usam; audio tocado fora da reuniao nao "
+            f"sera capturado.",
+            remedy=(
+                "Se a sua plataforma de reuniao usa o outro dispositivo, "
+                "ajuste device_role para 'multimidia' ou fixe o dispositivo."
+            ),
+        )
+
+    default_out = comms or multimedia
     # Speakers mean the microphone re-captures the other participants, and the
     # same speech lands on both tracks. Worth saying before the meeting, not after.
     if default_out is not None and not default_out.looks_like_headphones:

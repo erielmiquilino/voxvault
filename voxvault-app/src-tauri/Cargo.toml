@@ -1,0 +1,37 @@
+[package]
+name = "voxvault-app"
+version = "0.1.0"
+description = "Desktop surface for the VoxVault local meeting recorder"
+authors = ["Eriel Miquilino"]
+edition = "2021"
+
+[lib]
+name = "voxvault_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `protocol-asset` is what lets the player read a meeting's FLAC straight from
+# the data directory instead of copying it through a command.
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+# Single instance is a requirement, not a convenience: two windows would mean
+# two clients racing on the same recording.
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Already in the tree through Tauri; taken directly only for the free-space
+# query, which has no portable standard-library equivalent.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

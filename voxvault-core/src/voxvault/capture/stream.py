@@ -107,6 +107,12 @@ class CaptureStream:
         self.invalid_timestamps: int = 0
         self._frames_read: int = 0
 
+        #: Ratio between one unit of the reported device position and one
+        #: frame of the format this stream hands over. See :meth:`_emit`.
+        self.position_scale: float = 0.0
+        self.position_scale_note: str = "ainda nao calibrada"
+        self._calibrating: list = []
+
         #: Test-only hooks used by the gate to provoke a real capture overrun.
         self.debug_stall_after_s: float = 0.0
         self.debug_stall_s: float = 0.0
@@ -190,6 +196,106 @@ class CaptureStream:
 
     # -- lifecycle --------------------------------------------------------
 
+    # -- device position scale --------------------------------------------
+
+    def _emit(self, packet: CapturePacket, arrival: int | None, append) -> None:
+        """Hand a packet over, with its position in this stream's frame units.
+
+        In shared mode the reported device position is counted in the
+        **device's** own frames, while the buffer we receive is in the mix
+        format the engine resampled it into. Those differ whenever the device
+        runs at another rate -- a webcam microphone at 16 kHz behind a 48 kHz
+        mix reports its position advancing 160 per packet while handing over
+        480 frames.
+
+        Measured here, not assumed: taking the two as equal makes the placer
+        read every packet as overlapping its predecessor and discard two
+        thirds of the audio, silently. Nothing about that looks wrong until
+        the recording is played back.
+
+        The first packets are held until the ratio is known. That costs
+        nothing, because position and instant both travel with the packet: a
+        packet delivered late still lands where it was acquired.
+        """
+        if self.position_scale:
+            append(self._scaled(packet, arrival))
+            return
+
+        self._calibrating.append((packet, arrival))
+        if len(self._calibrating) < CALIBRATION_PACKETS:
+            return
+
+        first = self._calibrating[0][0]
+        advance = packet.device_position - first.device_position
+        delivered = sum(p.frames for p, _ in self._calibrating[:-1])
+        self._settle_scale(delivered, advance)
+        self._release_calibrated(append)
+
+    def _settle_scale(self, delivered: int, advance: int) -> None:
+        if advance <= 0 or delivered <= 0:
+            self.position_scale = 1.0
+            self.position_scale_note = (
+                "posicao de dispositivo nao avancou durante a calibracao; "
+                "assumida a mesma unidade do formato entregue"
+            )
+            return
+
+        measured = delivered / advance
+        if abs(measured - 1.0) < 0.02:
+            self.position_scale = 1.0
+            self.position_scale_note = "posicao ja vem em quadros do formato entregue"
+            return
+
+        # Snap to the exact ratio between two real sample rates rather than
+        # carrying the measurement's rounding error for the whole meeting.
+        mix_rate = self.format.sample_rate
+        implied = mix_rate / measured
+        nearest = min(_STANDARD_RATES, key=lambda r: abs(r - implied))
+        if abs(nearest - implied) / implied < 0.05:
+            self.position_scale = mix_rate / nearest
+            self.position_scale_note = (
+                f"dispositivo em {nearest} Hz atras de mixagem em {mix_rate} Hz "
+                f"(escala {self.position_scale:.4g})"
+            )
+        else:
+            self.position_scale = measured
+            self.position_scale_note = (
+                f"escala medida {measured:.4g}, sem taxa padrao correspondente"
+            )
+
+    def _scaled(self, packet: CapturePacket, arrival: int | None):
+        if self.position_scale != 1.0:
+            packet = CapturePacket(
+                data=packet.data,
+                frames=packet.frames,
+                device_position=int(round(packet.device_position * self.position_scale)),
+                qpc_ns=packet.qpc_ns,
+                discontinuity=packet.discontinuity,
+                silent=packet.silent,
+                timestamp_valid=packet.timestamp_valid,
+            )
+        return (packet, arrival) if arrival is not None else packet
+
+    def _release_calibrated(self, append) -> None:
+        held, self._calibrating = self._calibrating, []
+        for packet, arrival in held:
+            append(self._scaled(packet, arrival))
+
+    def _flush_calibration(self) -> None:
+        """Release anything still held when the stream stops.
+
+        A recording shorter than the calibration window would otherwise lose
+        its first packets entirely.
+        """
+        if not self._calibrating:
+            return
+        if not self.position_scale:
+            first = self._calibrating[0][0]
+            last = self._calibrating[-1][0]
+            delivered = sum(p.frames for p, _ in self._calibrating[:-1])
+            self._settle_scale(delivered, last.device_position - first.device_position)
+        self._release_calibrated(self._packets.append)
+
     def start(self, timeout_s: float = 120.0) -> int:
         """Open, initialise and start the stream. Returns the arming instant.
 
@@ -229,6 +335,9 @@ class CaptureStream:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout_s)
+        # A recording shorter than the calibration window still has its first
+        # packets in hand; releasing them here is what keeps them.
+        self._flush_calibration()
 
     def __enter__(self) -> "CaptureStream":
         self.start()
@@ -462,7 +571,7 @@ class CaptureStream:
                         silent=silent,
                         timestamp_valid=not (raw_flags & TS_ERROR) and qpc != 0,
                     )
-                    append((packet, qpc_now()) if record_arrival else packet)
+                    self._emit(packet, qpc_now() if record_arrival else None, append)
                     self.frames_captured += frames
                     self.packets_captured += 1
                     if packet.discontinuity:
@@ -475,6 +584,19 @@ class CaptureStream:
                 release_buffer(this, frames)
                 if not frames:
                     break
+
+
+#: Packets held back while the position scale is measured. Roughly 120 ms of
+#: audio, which costs nothing: the placer anchors on a packet's own timestamp,
+#: not on when it was handed over, so delivering the first ones late shifts
+#: nothing on the timeline.
+CALIBRATION_PACKETS: Final = 12
+
+#: Rates a capture device plausibly runs at natively. Used to snap a measured
+#: ratio to an exact one instead of carrying its rounding error forever.
+_STANDARD_RATES: Final = (
+    8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000, 192000,
+)
 
 
 def prewarm(endpoint_id: str, *, loopback: bool = True) -> float:

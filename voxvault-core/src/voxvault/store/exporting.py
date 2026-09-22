@@ -23,6 +23,7 @@ from typing import Any, Final
 
 from ..types import TimelineEntry
 from .models import ExportStatus, Meeting, Revision, from_ms
+from .notes import Note, NoteAuthor, NoteAuthorKind, NoteKind
 from .store import TranscriptStore
 from .timeline import format_duration, format_offset, overlapping_ids
 
@@ -30,8 +31,20 @@ READABLE_NAME: Final = "transcricao.md"
 STRUCTURED_NAME: Final = "transcricao.json"
 
 #: Bumped when the structured shape changes in a way a reader must notice.
+#:
+#: Version 2 added ``notas``. The key is always present, empty list included,
+#: so a reader can tell "this meeting has no notes" from "this file predates
+#: notes" -- which is the whole reason the version moved rather than the key
+#: simply appearing when there happened to be something to put in it.
 STRUCTURED_FORMAT: Final = "voxvault-transcricao"
-STRUCTURED_VERSION: Final = 1
+STRUCTURED_VERSION: Final = 2
+
+#: Heading of the notes section in the readable export. Notes go above the
+#: timeline because a summary is what a reader came for, and the section is
+#: named and captioned so that no line of it can be mistaken for something
+#: that was said.
+NOTES_HEADING: Final = "## Notas"
+TIMELINE_HEADING: Final = "## Linha de tempo"
 
 _REASON_NO_REVISION: Final = "sem_revisao_ativa"
 _REASON_MISSING_FILE: Final = "arquivo_ausente"
@@ -111,10 +124,13 @@ def regenerate_exports(store: TranscriptStore, meeting_uid: str) -> ExportStatus
     if active is None:
         raise_no_revision(meeting_uid)
     entries = store.timeline(meeting_uid)
+    notes = store.notes_of(meeting_uid)
     readable, structured = export_paths(meeting)
     readable.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomic(readable, render_readable(meeting, active, entries))
-    _write_atomic(structured, render_structured(meeting, active, entries))
+    _write_atomic(readable, render_readable(meeting, active, entries, notes=notes))
+    _write_atomic(
+        structured, render_structured(meeting, active, entries, notes=notes)
+    )
     store.set_exports_revision(meeting_uid, active.uid)
     return export_status(store, meeting_uid)
 
@@ -158,9 +174,21 @@ def reconcile_exports(store: TranscriptStore) -> list[str]:
 
 
 def render_readable(
-    meeting: Meeting, revision: Revision, entries: Iterable[TimelineEntry]
+    meeting: Meeting,
+    revision: Revision,
+    entries: Iterable[TimelineEntry],
+    *,
+    notes: Iterable[Note] = (),
 ) -> str:
+    """The meeting as a person reads it: metadata, then notes, then the record.
+
+    The notes get a section of their own with a caption saying what they are,
+    and no note text is ever emitted inside the timeline. Someone skimming
+    this file in a year has to be able to tell, without thinking about it,
+    which lines are what was said and which are what somebody concluded.
+    """
     entries = list(entries)
+    notes = list(notes)
     flagged = overlapping_ids(entries)
     started = from_ms(meeting.started_at_ms).astimezone()
     lines = [
@@ -182,7 +210,16 @@ def render_readable(
         lines.append(
             f"- Trilhas nao transcritas: {', '.join(revision.tracks_failed)}"
         )
-    lines += ["", "## Linha de tempo", ""]
+    if notes:
+        lines += ["", NOTES_HEADING, ""]
+        lines.append(
+            "_Interpretacao registrada depois da reuniao. O que foi dito esta "
+            "na linha de tempo, mais abaixo._"
+        )
+        for note in notes:
+            lines += ["", _note_heading(note), ""]
+            lines.append(note.content.strip())
+    lines += ["", TIMELINE_HEADING, ""]
     if not entries:
         lines.append("_Sem segmentos transcritos._")
     for entry in entries:
@@ -195,9 +232,14 @@ def render_readable(
 
 
 def render_structured(
-    meeting: Meeting, revision: Revision, entries: Iterable[TimelineEntry]
+    meeting: Meeting,
+    revision: Revision,
+    entries: Iterable[TimelineEntry],
+    *,
+    notes: Iterable[Note] = (),
 ) -> str:
     entries = list(entries)
+    notes = list(notes)
     flagged = overlapping_ids(entries)
     payload: dict[str, Any] = {
         "formato": STRUCTURED_FORMAT,
@@ -246,6 +288,25 @@ def render_structured(
             }
             for e in entries
         ],
+        # A key of its own, never entries mixed into "segmentos". A consumer
+        # that reads only the timeline gets only what was said, which is the
+        # property the whole notes feature is built around.
+        "notas": [
+            {
+                "uid": n.uid,
+                "tipo": str(n.kind),
+                "conteudo": n.content,
+                "autoria": {
+                    "tipo": str(n.author.kind),
+                    "cliente": n.author.client,
+                },
+                "criada_em_ms": n.created_at_ms,
+                "criada_em": from_ms(n.created_at_ms).isoformat(),
+                "alterada_em_ms": n.updated_at_ms,
+                "alterada_em": from_ms(n.updated_at_ms).isoformat(),
+            }
+            for n in notes
+        ],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
@@ -269,7 +330,44 @@ def timeline_from_structured(payload: dict[str, Any]) -> list[TimelineEntry]:
     ]
 
 
+def notes_from_structured(payload: dict[str, Any]) -> list[Note]:
+    """Rebuild the notes from a structured export, without loss.
+
+    ``id`` and ``meeting_id`` come back as zero: they are row numbers that
+    never left the database, and a file that carried them would be inviting
+    someone to write them back somewhere they do not belong.
+    """
+    return [
+        Note(
+            id=0,
+            uid=item["uid"],
+            meeting_id=0,
+            meeting_uid=payload["reuniao"]["uid"],
+            kind=NoteKind(item["tipo"]),
+            content=item["conteudo"],
+            author=NoteAuthor(
+                NoteAuthorKind(item["autoria"]["tipo"]), item["autoria"]["cliente"]
+            ),
+            created_at_ms=item["criada_em_ms"],
+            updated_at_ms=item["alterada_em_ms"],
+        )
+        for item in payload.get("notas", [])
+    ]
+
+
 # -- internals -----------------------------------------------------------
+
+
+def _note_heading(note: Note) -> str:
+    """One note's own heading: what it claims to be, and who claimed it."""
+    moment = from_ms(note.created_at_ms).astimezone().strftime("%Y-%m-%d %H:%M")
+    line = f"### {note.kind} ({note.author.describe()}, {moment})"
+    if note.updated_at_ms != note.created_at_ms:
+        altered = (
+            from_ms(note.updated_at_ms).astimezone().strftime("%Y-%m-%d %H:%M")
+        )
+        line += f" -- alterada em {altered}"
+    return line
 
 
 def _write_atomic(path: Path, content: str) -> None:

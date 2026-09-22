@@ -82,7 +82,7 @@ def test_previous_version_is_migrated_without_losing_records(
     seed_v1_records(db_path, tmp_path / "antiga")
 
     with TranscriptStore(db_path) as store:
-        assert store.applied_migrations == [2]
+        assert store.applied_migrations == [2, 3]
         assert store.schema_version == SCHEMA_VERSION
         meeting = store.get_meeting("antiga")
         assert meeting is not None
@@ -96,12 +96,84 @@ def test_previous_version_is_migrated_without_losing_records(
         assert store.integrity_check() == "ok"
 
 
+def build_v2_database(path: Path, directory: Path) -> None:
+    """A database as the build before notes would have left it.
+
+    The records are seeded between the two migrations, not after both, so the
+    search index is populated the way the v2 migration really populates it.
+    Seeding afterwards would produce a v2 database no v2 build could have
+    written, and the test would prove nothing about the real upgrade path.
+    """
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("BEGIN IMMEDIATE")
+    for statement in MIGRATIONS[0][1]:
+        conn.execute(statement)
+    conn.execute("PRAGMA user_version = 1")
+    conn.execute("COMMIT")
+    conn.close()
+
+    seed_v1_records(path, directory)
+
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.execute("BEGIN IMMEDIATE")
+    for statement in MIGRATIONS[1][1]:
+        conn.execute(statement)
+    conn.execute("PRAGMA user_version = 2")
+    conn.executemany(
+        "INSERT INTO schema_migrations(version, applied_at_ms, applied_by_pid)"
+        " VALUES (?, 0, 0)",
+        [(1,), (2,)],
+    )
+    conn.execute("COMMIT")
+    conn.close()
+
+
+def test_a_v2_database_gains_notes_without_losing_meetings_or_segments(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """Task 1.1: the notes migration only adds.
+
+    Everything a v2 build could have recorded -- the meeting, both segments,
+    the active revision and the search index over it -- is checked on the far
+    side of the upgrade.
+    """
+    from voxvault.store import NoteAuthor
+
+    build_v2_database(db_path, tmp_path / "antiga")
+
+    with TranscriptStore(db_path) as store:
+        assert store.applied_migrations == [3]
+        assert store.schema_version == SCHEMA_VERSION
+
+        meeting = store.get_meeting("antiga")
+        assert meeting is not None
+        assert meeting.title == "Reuniao antiga"
+        assert meeting.active_revision_id == 1
+        assert [e.text for e in store.timeline("antiga")] == [
+            "combinamos a reunião de quarta",
+            "perfeito, ate quarta",
+        ]
+        assert [h.meeting_uid for h in store.search("reuniao")] == ["antiga"]
+        assert store.integrity_check() == "ok"
+
+        # And the thing the migration was for now works on that same database.
+        assert store.notes_of("antiga") == []
+        note = store.create_note(
+            "antiga",
+            kind="resumo",
+            content="ficou combinada a reuniao de quarta",
+            author=NoteAuthor.user(),
+        )
+        assert [n.uid for n in store.notes_of("antiga")] == [note.uid]
+
+
 def test_migration_is_recorded_once_per_version(db_path: Path) -> None:
     with TranscriptStore(db_path) as store:
         rows = store._conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert [r[0] for r in rows] == [1, 2]
+    assert [r[0] for r in rows] == [1, 2, 3]
 
 
 def test_future_version_is_refused_naming_both_versions(db_path: Path) -> None:
@@ -140,7 +212,7 @@ def test_two_processes_opening_a_stale_database_migrate_exactly_once(
 
     assert len({r["pid"] for r in results}) == 4
     applied = sorted([r["applied"] for r in results])
-    assert applied == [[], [], [], [2]], (
+    assert applied == [[], [], [], [2, 3]], (
         f"as migracoes nao foram aplicadas uma unica vez: {applied}"
     )
     assert {r["version"] for r in results} == {SCHEMA_VERSION}
@@ -153,7 +225,7 @@ def test_two_processes_opening_a_stale_database_migrate_exactly_once(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
         ]
-    assert versions == [1, 2], "uma migracao foi registrada duas vezes"
+    assert versions == [1, 2, 3], "uma migracao foi registrada duas vezes"
 
 
 def test_waiting_for_another_process_migration_fails_after_the_deadline(

@@ -20,7 +20,7 @@ def test_new_database_has_every_expected_table(store: TranscriptStore) -> None:
 
 def test_new_database_is_at_the_current_schema_version(store: TranscriptStore) -> None:
     assert store.schema_version == SCHEMA_VERSION
-    assert store.applied_migrations == [1, 2]
+    assert store.applied_migrations == [1, 2, 3]
 
 
 def test_reopening_applies_nothing(db_path: Path, store: TranscriptStore) -> None:
