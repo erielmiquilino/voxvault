@@ -266,6 +266,47 @@ def _probe_open(endpoint) -> tuple[bool, str]:
     return True, ""
 
 
+def _check_mcp_registration() -> DiagnosticItem:
+    """Whether an agent client can actually reach the meeting history.
+
+    A warning and never a failure: the recorder works perfectly without any
+    MCP client registered. But the whole point of the server is that Claude
+    Desktop or Codex can read the transcripts, and a server nobody registered
+    is one nobody will ever notice is missing.
+    """
+    from .mcp.install import inspect as inspect_client
+    from .mcp.install import known_clients, render_snippet
+
+    registered: list[str] = []
+    pending: list[str] = []
+    for client in known_clients():
+        state, _detail = inspect_client(client)
+        (registered if state == "registrado" else pending).append(client.name)
+
+    if registered and not pending:
+        return DiagnosticItem(
+            "mcp", "Servidor MCP", "ok",
+            f"registrado em: {', '.join(registered)}",
+        )
+    if registered:
+        return DiagnosticItem(
+            "mcp", "Servidor MCP", "ok",
+            f"registrado em {', '.join(registered)}; ausente em "
+            f"{', '.join(pending)}",
+            remedy="voxvault mcp --apply",
+        )
+    return DiagnosticItem(
+        "mcp", "Servidor MCP", "aviso",
+        f"nao registrado em nenhum cliente ({', '.join(pending) or 'nenhum encontrado'}). "
+        f"A gravacao e a transcricao funcionam; o que falta e um agente poder "
+        f"ler as reunioes.",
+        remedy=(
+            "Rode 'voxvault mcp --apply', ou cole o trecho abaixo em "
+            "'mcpServers':\n          " + render_snippet().replace("\n", "\n          ")
+        ),
+    )
+
+
 def run_diagnostics(config: Config | None = None) -> Report:
     cfg = config or load_config()
     report = Report(config_sources=dict(cfg.sources))
@@ -275,6 +316,7 @@ def run_diagnostics(config: Config | None = None) -> Report:
     report.add(_check_decoder())
     report.add(_check_inference(cfg))
     report.add(_check_capture())
+    report.add(_check_mcp_registration())
     return report
 
 
