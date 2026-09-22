@@ -80,6 +80,11 @@ class Config:
     compute_type: str = "float16"
     language: str = "pt"
     vocabulary: str = ""
+    #: Off by default, and deliberately so. With a GPU present but its
+    #: libraries broken, falling back to CPU turns a one-hour meeting into
+    #: hours of processing and hides a defect the user needs to fix. Running
+    #: on CPU in that situation has to be an explicit choice.
+    allow_cpu_fallback: bool = False
 
     # --- audio devices --------------------------------------------------
     device_role: str = DEVICE_ROLE_COMMUNICATIONS
@@ -139,10 +144,23 @@ _INT_FIELDS = frozenset(
      "idle_shutdown_s", "service_port"}
 )
 _FLOAT_FIELDS = frozenset({"flush_interval_s", "write_stall_abort_s"})
+_BOOL_FIELDS = frozenset({"allow_cpu_fallback"})
+
+_TRUE_WORDS = frozenset({"1", "true", "sim", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "nao", "não", "no", "off"})
 
 
 def _coerce(name: str, raw: Any, source: str) -> Any:
     """Convert a raw value to the field's type, naming the source on failure."""
+    if name in _BOOL_FIELDS:
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        if text in _TRUE_WORDS:
+            return True
+        if text in _FALSE_WORDS:
+            return False
+        raise ConfigError(name, source, f"esperado booleano, recebido {raw!r}")
     if name in _PATH_FIELDS:
         text = str(raw).strip()
         if not text:

@@ -1,0 +1,5 @@
+Bom dia pessoal, vamos começar a reunião de alinhamento da sprint.
+O primeiro ponto é a migração do banco para o Postgres quinze.
+Eu fiquei responsável por revisar o pull request do módulo de autenticação.
+Minha dúvida é se o deploy no Kubernetes vai precisar de janela de manutenção.
+Também precisamos decidir quem assume a apresentação para o cliente na quinta-feira.

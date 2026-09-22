@@ -1,0 +1,5 @@
+Bom dia. Pela nossa estimativa a migração leva dois dias úteis.
+O time de infraestrutura já preparou o ambiente de homologação.
+Sobre o Kubernetes, conseguimos fazer sem downtime usando rolling update.
+Vou registrar essas pendências no Jira ainda hoje e mando o link no canal.
+Eu posso assumir a apresentação, já tenho os números do último trimestre.
