@@ -50,6 +50,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     transcribe.set_defaults(handler=_cmd_transcribe)
 
+    bench = sub.add_parser(
+        "bench",
+        help="Compara varias configuracoes de modelo sobre o mesmo audio.",
+    )
+    bench.add_argument("arquivo", type=Path)
+    bench.add_argument(
+        "--models", default="large-v3,large-v3-turbo",
+        help="Modelos separados por virgula.",
+    )
+    bench.add_argument("--language", default=None)
+    bench.add_argument("--vocabulary", default=None)
+    bench.set_defaults(handler=_cmd_bench)
+
     config_cmd = sub.add_parser(
         "config", help="Mostra ou altera a configuracao compartilhada."
     )
@@ -133,6 +146,46 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         f"audio ({speed:.1f}x tempo real)\n"
     )
     return 0
+
+
+def _cmd_bench(args: argparse.Namespace) -> int:
+    from ..bench import run_benchmark  # noqa: PLC0415
+
+    config = _load(args)
+    path: Path = args.arquivo
+    if not path.exists():
+        sys.stderr.write(f"Arquivo nao encontrado: {path}\n")
+        return 2
+
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    if not models:
+        sys.stderr.write("Indique ao menos um modelo com --models.\n")
+        return 2
+
+    sys.stdout.write(
+        f"Comparando {len(models)} configuracao(oes) sobre {path.name}.\n"
+        f"Cada uma roda em processo proprio, para que a memoria de GPU seja "
+        f"liberada entre elas.\n\n"
+    )
+    report = run_benchmark(
+        config, path, models,
+        language=args.language or config.language,
+        vocabulary=args.vocabulary if args.vocabulary is not None else config.vocabulary,
+    )
+
+    for run in report.runs:
+        if run.ok:
+            peak = f"{run.peak_gpu_mb} MB" if run.peak_gpu_mb is not None else "n/a"
+            sys.stdout.write(
+                f"  [ok]    {run.label:<20} {run.realtime_factor:>5.1f}x tempo real | "
+                f"carga {run.load_seconds:5.1f}s | decode {run.decode_seconds:5.1f}s | "
+                f"pico {peak}\n"
+            )
+        else:
+            sys.stdout.write(f"  [FALHA] {run.label:<20} {run.error}\n")
+
+    sys.stdout.write(f"\nRelatorio: {report.output_dir / 'relatorio.md'}\n")
+    return 1 if report.any_failed else 0
 
 
 def _cmd_config(args: argparse.Namespace) -> int:

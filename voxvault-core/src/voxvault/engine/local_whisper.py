@@ -69,6 +69,15 @@ class LocalWhisperEngine:
             version=self._version,
         )
 
+    def warm_up(self) -> None:
+        """Load the model now rather than on the first transcription.
+
+        The resident service calls this so the first meeting in a queue does
+        not pay the load cost as if it were decoding cost, and the benchmark
+        calls it to time loading separately from decoding.
+        """
+        self._ensure_model()
+
     def transcribe(
         self,
         audio_path: Path,
