@@ -137,6 +137,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     devices.set_defaults(handler=_cmd_devices)
 
+    mcp_cmd = sub.add_parser(
+        "mcp", help="Verifica e registra o servidor MCP nos clientes de agente."
+    )
+    mcp_cmd.add_argument(
+        "--apply", action="store_true",
+        help="Grava o registro. Sem isso, apenas mostra o que seria alterado.",
+    )
+    mcp_cmd.set_defaults(handler=_cmd_mcp)
+
     return parser
 
 
@@ -679,6 +688,51 @@ def _cmd_devices(args: argparse.Namespace) -> int:
 
     sys.stdout.write(format_endpoints(list_endpoints()))
     sys.stdout.write("\n")
+    return 0
+
+
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    from ..mcp.install import apply, inspect, known_clients, render_snippet  # noqa: PLC0415
+
+    config = _load(args)
+    sys.stdout.write(
+        f"Servidor MCP do VoxVault\n"
+        f"  diretorio de dados: {config.data_dir}  <- {config.source_of('data_dir')}\n\n"
+    )
+
+    pendentes = []
+    for client in known_clients():
+        estado, detalhe = inspect(client)
+        sys.stdout.write(f"  {client.name}\n")
+        sys.stdout.write(f"    {client.path}\n")
+        sys.stdout.write(f"    {estado}: {detalhe}\n")
+        if estado in {"nao registrado", "divergente", "ausente"}:
+            pendentes.append(client)
+        sys.stdout.write("\n")
+
+    if not pendentes:
+        sys.stdout.write("Tudo registrado.\n")
+        return 0
+
+    if not args.apply:
+        sys.stdout.write(
+            "Trecho a acrescentar em 'mcpServers':\n\n"
+            f"{render_snippet()}\n\n"
+            "Para o VoxVault gravar isso sozinho, rode de novo com --apply. "
+            "O arquivo atual e copiado antes de qualquer alteracao.\n"
+        )
+        return 0
+
+    for client in pendentes:
+        try:
+            path = apply(client)
+        except ValueError as exc:
+            sys.stderr.write(f"  {client.name}: {exc}\n")
+            continue
+        sys.stdout.write(f"  {client.name} registrado em {path}\n")
+    sys.stdout.write(
+        "\nReinicie o cliente para que ele carregue o servidor.\n"
+    )
     return 0
 
 

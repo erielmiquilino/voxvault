@@ -47,7 +47,6 @@ from .models import (
 )
 from .notes import (
     NATURE_NOTE,
-    NATURE_TRANSCRIPT,
     NOTE_COLUMNS,
     Note,
     NoteAuthor,
@@ -902,7 +901,7 @@ class TranscriptStore:
             return []
         arms: list[str] = []
         params: list[Any] = []
-        sources = []
+        sources: list[str] = []
         if wanted is not SearchScope.NOTES:
             sources.append(_TRANSCRIPT_ARM)
         if wanted is not SearchScope.TRANSCRIPTS:

@@ -149,7 +149,7 @@ def _meeting_summary(meeting) -> dict:
 
 
 def _note_count(meeting_uid: str) -> int:
-    lister = getattr(SESSION.store, "list_notes", None)
+    lister = getattr(SESSION.store, "notes_of", None)
     if lister is None:
         return 0
     try:
@@ -372,31 +372,42 @@ def _register(server) -> None:
         reuniao: Annotated[str, Field(description="Restringe a uma reunião")] = "",
         limite: int = 50,
     ) -> dict:
-        kwargs: dict[str, Any] = {"limit": clamp_page_size(limite)}
+        # Always passed, including "ambos". The store defaults to transcripts
+        # only, so omitting it would quietly drop every note from a search the
+        # caller did not restrict -- which is the opposite of what asking for
+        # no restriction means.
+        kwargs: dict[str, Any] = {
+            "limit": clamp_page_size(limite),
+            "scope": escopo or "ambos",
+        }
         if reuniao:
             kwargs["meeting_uid"] = _meeting_or_fail(reuniao).uid
-        if escopo and escopo != "ambos":
-            kwargs["scope"] = escopo
 
-        try:
-            hits = SESSION.store.search(termo, **kwargs)
-        except TypeError:
-            kwargs.pop("scope", None)
-            hits = SESSION.store.search(termo, **kwargs)
+        hits = SESSION.store.search(termo, **kwargs)
 
-        resultados = [
-            {
+        resultados = []
+        for hit in hits:
+            # A note has no instant, no track and no speaker. Filling those
+            # with zeros would render an interpretation as though it were
+            # something someone said at the start of the meeting.
+            item = {
                 "reuniao": hit.meeting_uid,
                 "titulo": hit.meeting_title,
-                "inicio_ms": hit.start_ms,
-                "natureza": getattr(hit, "kind", "transcricao"),
-                "falante": hit.speaker,
+                "natureza": getattr(hit, "nature", "transcricao"),
                 "recorte": hit.excerpt,
-                "nota": getattr(hit, "note_id", None),
             }
-            for hit in hits
-        ]
-        return {"termo": termo, "escopo": escopo, "itens": resultados,
+            if hasattr(hit, "start_ms"):
+                item["inicio_ms"] = hit.start_ms
+                item["falante"] = hit.speaker
+            note_uid = getattr(hit, "note_uid", None) or getattr(hit, "uid", None)
+            if note_uid:
+                # The identifier is what makes a found note readable in full,
+                # updatable and removable.
+                item["nota"] = note_uid
+                item["tipo"] = str(getattr(hit, "kind", ""))
+            resultados.append(item)
+
+        return {"termo": termo, "escopo": kwargs["scope"], "itens": resultados,
                 "total": len(resultados), "ha_mais": False}
 
     @server.tool(
@@ -458,7 +469,7 @@ def _register_notes(server) -> None:
         cursor: str = "",
     ) -> dict:
         meeting = _meeting_or_fail(reuniao)
-        notes = _notes_api().list_notes(meeting.uid)
+        notes = _notes_api().notes_of(meeting.uid)
 
         after = None
         if cursor:
@@ -466,24 +477,17 @@ def _register_notes(server) -> None:
 
         def source():
             for note in notes:
-                key = (note.created_at_ms, note.id)
+                key = (note.created_at_ms, note.uid)
                 if after is not None and key <= tuple(after):
                     continue
                 yield note
 
         page = build_page(
             source(),
-            render=lambda n: {
-                "id": n.id,
-                "tipo": n.type,
-                "autoria": n.author,
-                "criada_em": n.created_at.isoformat(),
-                "alterada_em": n.updated_at.isoformat(),
-                "recorte": _cut(n.content),
-            },
+            render=lambda n: {**_note_payload(n), "recorte": _cut(n.content)},
             text_of=lambda r: r["recorte"],
             cursor_of=lambda n: issue(
-                Tool.NOTES, (n.created_at_ms, n.id), STABLE_BASE
+                Tool.NOTES, (n.created_at_ms, n.uid), STABLE_BASE
             ),
             page_size=tamanho_da_pagina,
         )
@@ -498,7 +502,7 @@ def _register_notes(server) -> None:
     )
     @_speaks_to_the_agent
     def ler_nota(
-        nota: Annotated[int, Field(description="Identificador da nota")],
+        nota: Annotated[str, Field(description="Identificador da nota")],
         cursor: str = "",
     ) -> dict:
         note = _notes_api().get_note(nota)
@@ -512,13 +516,7 @@ def _register_notes(server) -> None:
 
         window, next_offset = paginate_text(note.content, offset)
         payload = {
-            "id": note.id,
-            "reuniao": note.meeting_uid,
-            "tipo": note.type,
-            "autoria": note.author,
-            "criada_em": note.created_at.isoformat(),
-            "alterada_em": note.updated_at.isoformat(),
-            "conteudo": window,
+            **_note_payload(note, content=window),
             "ha_mais": next_offset is not None,
         }
         if next_offset is not None:
@@ -541,12 +539,18 @@ def _register_notes(server) -> None:
         tipo: Annotated[str, Field(description="Tipo da nota, ex. resumo")],
         conteudo: Annotated[str, Field(description="Texto da nota")],
     ) -> dict:
+        from ..store.notes import NoteAuthor  # noqa: PLC0415
+
         meeting = _meeting_or_fail(reuniao)
         note = _notes_api().create_note(
-            meeting.uid, type=tipo, content=conteudo, author=SESSION.client
+            meeting.uid,
+            kind=tipo,
+            content=conteudo,
+            # An automated client has to name itself: "an agent wrote this" is
+            # not enough to judge a summary by months later.
+            author=NoteAuthor.agent(SESSION.client),
         )
-        return {"id": note.id, "reuniao": meeting.uid, "tipo": note.type,
-                "autoria": note.author}
+        return _note_payload(note)
 
     @server.tool(
         name="atualizar_nota",
@@ -557,11 +561,10 @@ def _register_notes(server) -> None:
     )
     @_speaks_to_the_agent
     def atualizar_nota(
-        nota: Annotated[int, Field(description="Identificador da nota")],
+        nota: Annotated[str, Field(description="Identificador da nota")],
         conteudo: Annotated[str, Field(description="Novo texto")],
     ) -> dict:
-        updated = _notes_api().update_note(nota, content=conteudo)
-        return {"id": updated.id, "alterada_em": updated.updated_at.isoformat()}
+        return _note_payload(_notes_api().update_note(nota, content=conteudo))
 
     @server.tool(
         name="remover_nota",
@@ -569,7 +572,7 @@ def _register_notes(server) -> None:
     )
     @_speaks_to_the_agent
     def remover_nota(
-        nota: Annotated[int, Field(description="Identificador da nota")],
+        nota: Annotated[str, Field(description="Identificador da nota")],
     ) -> dict:
         _notes_api().delete_note(nota)
         return {"id": nota, "removida": True}
@@ -578,12 +581,26 @@ def _register_notes(server) -> None:
 def _notes_api():
     """The store's note API, with a clear message when it is not there yet."""
     store = SESSION.store
-    if not hasattr(store, "list_notes"):
+    if not hasattr(store, "notes_of"):
         raise RuntimeError(
             "Este armazenamento ainda nao tem suporte a notas. Atualize o "
             "VoxVault para uma versao que inclua a migracao de notas."
         )
     return store
+
+
+def _note_payload(note, *, content: str | None = None) -> dict:
+    payload = {
+        "id": note.uid,
+        "reuniao": note.meeting_uid,
+        "tipo": str(note.kind),
+        "autoria": note.author.describe(),
+        "criada_em": note.created_at.isoformat(),
+        "alterada_em": note.updated_at.isoformat(),
+    }
+    if content is not None:
+        payload["conteudo"] = content
+    return payload
 
 
 def _parse_moment(text: str) -> datetime | None:
