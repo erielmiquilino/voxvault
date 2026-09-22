@@ -266,3 +266,53 @@ def test_each_thread_gets_its_own_store_handle(service: ResidentService) -> None
     assert len(set(seen)) == 3
 
     service.store.close_all()
+
+
+# -- the shutdown request must be honourable ---------------------------
+
+def test_a_connected_client_does_not_block_an_explicit_shutdown(
+    service: ResidentService, monkeypatch
+) -> None:
+    """The bug this guards: every request refreshes client presence, including
+    the request asking the service to stop. Counting that made the shutdown
+    route impossible to honour -- and it refused with the wrong reason, because
+    it fell through to blaming an empty queue."""
+    monkeypatch.setattr(type(service.pipeline), "pending", lambda self: [])
+    service.touch()  # exactly what the /encerrar request itself does
+
+    assert service.busy() is True, "o temporizador de ociosidade deve segurar"
+    assert service.has_work() == (False, ""), "mas nao ha trabalho a perder"
+    assert _shutdown_if_idle(service) == {"encerrando": True}
+
+
+def test_the_refusal_names_the_real_reason(service: ResidentService, monkeypatch) -> None:
+    monkeypatch.setattr(
+        type(service.pipeline), "pending", lambda self: ["uma", "outra"]
+    )
+    with pytest.raises(ServiceBusy) as caught:
+        _shutdown_if_idle(service)
+    assert "2 reuniao" in str(caught.value)
+
+    monkeypatch.setattr(type(service.pipeline), "pending", lambda self: [])
+    service._session = object()
+    try:
+        with pytest.raises(ServiceBusy, match="gravacao em andamento"):
+            _shutdown_if_idle(service)
+    finally:
+        service._session = None
+
+
+def test_health_and_the_shutdown_guard_agree(service: ResidentService, monkeypatch) -> None:
+    """They disagreed, and a surface trusting one was more permissive than the
+    service's own guard."""
+    monkeypatch.setattr(type(service.pipeline), "pending", lambda self: [])
+    service.touch()
+
+    saude = service.health()
+    blocked, _reason = service.has_work()
+
+    assert saude["fila_pendente"] == 0
+    assert saude["gravacao_ativa"] is False
+    assert blocked is False, (
+        "saude diz que nao ha trabalho; a guarda tem de concordar"
+    )

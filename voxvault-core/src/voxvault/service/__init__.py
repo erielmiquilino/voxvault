@@ -334,16 +334,38 @@ class ResidentService:
                 self.stop()
                 return
 
-    def busy(self) -> bool:
-        """Work that must not be interrupted by an idle shutdown."""
+    def has_work(self) -> tuple[bool, str]:
+        """Work that would be destroyed by ending now, and what it is.
+
+        Deliberately excludes "a client is connected". Those are two different
+        questions and conflating them made the service impossible to stop:
+        every request refreshes client presence, including the request asking
+        it to stop, so an explicit shutdown was always refused -- and refused
+        with the wrong reason, because it fell through to blaming the queue.
+        """
         with self._lock:
             if self._session is not None:
-                return True
+                return True, "ha uma gravacao em andamento"
         try:
-            if self.pipeline.pending():
-                return True
+            pending = self.pipeline.pending()
         except Exception:
-            pass
+            pending = []
+        if pending:
+            return True, (
+                f"ainda ha {len(pending)} reuniao(oes) aguardando transcricao"
+            )
+        return False, ""
+
+    def busy(self) -> bool:
+        """Whether the idle timer should hold off.
+
+        Broader than :meth:`has_work` on purpose: a connected client keeps the
+        service alive even with nothing to do, because ending it under a
+        surface that is still using it would just make that surface start it
+        again a second later.
+        """
+        if self.has_work()[0]:
+            return True
         return (time.monotonic() - self._last_client_seen) < CLIENT_PRESENCE_S
 
     def touch(self) -> None:
@@ -679,16 +701,13 @@ def _shutdown_if_idle(service: ResidentService) -> dict:
     """Refuse to end while there is a recording or a queue.
 
     An app that could end the service at will would silently throw away a
-    transcription queue when someone closed a window.
+    transcription queue when someone closed a window. A client merely being
+    connected is not a reason to refuse: the client asking to stop is itself
+    connected, so counting that would make the request impossible to honour.
     """
-    if service.busy():
-        with service._lock:
-            gravando = service._session is not None
-        raise ServiceBusy(
-            "O servico nao pode ser encerrado agora: "
-            + ("ha uma gravacao em andamento." if gravando
-               else "ainda ha reunioes aguardando transcricao.")
-        )
+    blocked, reason = service.has_work()
+    if blocked:
+        raise ServiceBusy(f"O servico nao pode ser encerrado agora: {reason}.")
     service.stop()
     return {"encerrando": True}
 
