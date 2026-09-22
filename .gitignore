@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Node / Tauri
+node_modules/
+target/
+.svelte-kit/
+
+# Dados locais (nunca versionar gravacoes ou banco)
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.wav
+*.flac
+*.opus
+
+# Ambiente
+.env
+.env.local

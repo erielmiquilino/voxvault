@@ -1,0 +1,52 @@
+[project]
+name = "voxvault-core"
+version = "0.1.0"
+description = "Grava, transcreve e indexa reunioes localmente no Windows, sem depender da plataforma de reuniao."
+readme = "README.md"
+# Teto definido pela intersecao de wheels Windows: soxr pula 3.13, numpy exige >=3.12.
+# Reconfirmado ou revisado no portao de captura da Fase 1 (tarefa 2.0.4).
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    "numpy>=2.0",
+    "soxr>=0.5",
+    "soundfile>=0.13",
+]
+
+[project.optional-dependencies]
+# Motor de transcricao local. Separado para que o servidor MCP e a CLI
+# nunca carreguem o runtime de inferencia sem precisar.
+engine = [
+    "faster-whisper>=1.1",
+    "ctranslate2>=4.5",
+]
+cuda = [
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
+]
+mcp = [
+    "mcp>=1.2",
+]
+dev = [
+    "pytest>=8",
+    "pytest-timeout>=2.3",
+]
+
+[project.scripts]
+voxvault = "voxvault.cli.__main__:main"
+voxvault-mcp = "voxvault.mcp.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voxvault"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: exige dispositivo de audio real",
+    "gpu: exige GPU NVIDIA disponivel",
+    "slow: leva mais de 30 segundos",
+]
