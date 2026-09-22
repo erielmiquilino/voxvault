@@ -17,7 +17,6 @@ from voxvault.store import Origin, RevisionStatus, TranscriptState, TranscriptSt
 from voxvault.store.exporting import export_status
 from voxvault.types import EngineInfo, RevisionState, Segment, Track
 
-
 # -- identity and freezing ----------------------------------------------
 
 
@@ -192,7 +191,7 @@ def test_the_timeline_never_mixes_two_revisions(
         row[0]
         for row in store._conn.execute(
             "SELECT DISTINCT revision_id FROM segments WHERE id IN "
-            "(%s)" % ",".join(str(e.segment_id) for e in entries)
+            "({})".format(",".join(str(e.segment_id) for e in entries))
         )
     }
     assert revision_ids == {second.id}

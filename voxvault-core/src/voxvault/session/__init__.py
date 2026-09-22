@@ -17,13 +17,13 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..config import Config
 from ..errors import CaptureError
-from ..layout import TRACK_BASENAME, meeting_dir, track_path
-from ..types import MeetingState, Track
+from ..layout import meeting_dir, track_path
+from ..types import Track
 from .finalize import (
     Metadata,
     Step,
@@ -84,7 +84,7 @@ class RecordingSession:
         self.uid = uid or uuid.uuid4().hex
         self.title = title or _default_title()
         self.directory = meeting_dir(config.data_dir, self.uid)
-        self.started_at = datetime.now(timezone.utc)
+        self.started_at = datetime.now(UTC)
         self._mic_stream = mic_stream
         self._system_stream = system_stream
         self._streams: dict[str, object] = {}
@@ -235,7 +235,7 @@ class RecordingSession:
 
     def supervise_devices(self, watches) -> None:
         """Start watching the tracks' devices for loss and for role changes."""
-        from .supervisor import DeviceSupervisor  # noqa: PLC0415
+        from .supervisor import DeviceSupervisor
 
         supervisor = DeviceSupervisor(self)
         for watch in watches:
@@ -386,9 +386,7 @@ class RecordingSession:
         metadata.ended_at = now_iso()
         metadata.tracks = stats
         metadata.pauses = [p.as_dict() for p in self._pauses]
-        metadata.warnings = list(self._warnings) + [
-            f"a gravacao foi encerrada por {reason}"
-        ]
+        metadata.warnings = [*list(self._warnings), f"a gravacao foi encerrada por {reason}"]
         # Stops at "files closed": everything after it is derived work that
         # the resume redoes, and claiming otherwise would make recovery skip
         # steps that never ran.

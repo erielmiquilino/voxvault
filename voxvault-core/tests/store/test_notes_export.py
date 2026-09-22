@@ -138,7 +138,7 @@ def test_the_structured_export_carries_every_field_of_every_note(
     stored = annotated.notes_of("reuniao-1")
     assert len(payload["notas"]) == 2
 
-    for item, note in zip(payload["notas"], stored):
+    for item, note in zip(payload["notas"], stored, strict=False):
         assert item["uid"] == note.uid
         assert item["tipo"] == str(note.kind)
         assert item["conteudo"] == note.content
@@ -157,7 +157,7 @@ def test_the_structured_notes_round_trip_without_loss(
     stored = annotated.notes_of("reuniao-1")
 
     assert [n.uid for n in rebuilt] == [n.uid for n in stored]
-    for back, note in zip(rebuilt, stored):
+    for back, note in zip(rebuilt, stored, strict=False):
         assert back.kind is note.kind
         assert back.content == note.content
         assert back.author == note.author

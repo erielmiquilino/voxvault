@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     if "--check" in argv:
         return _check()
 
-    from .server import build_server  # noqa: PLC0415
+    from .server import build_server
 
     build_server().run(transport="stdio")
     return 0
@@ -30,7 +30,7 @@ def _check() -> int:
     the server as failed: it answers "can it work here" without needing a
     client to ask.
     """
-    from ..config import load_config  # noqa: PLC0415
+    from ..config import load_config
 
     config = load_config()
     sys.stdout.write(f"diretorio de dados: {config.data_dir}\n")
@@ -45,7 +45,7 @@ def _check() -> int:
         return 0
 
     try:
-        from ..store import TranscriptStore  # noqa: PLC0415
+        from ..store import TranscriptStore
 
         store = TranscriptStore(config.db_path)
     except Exception as exc:

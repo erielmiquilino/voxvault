@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..config import Config
@@ -136,6 +136,6 @@ def _original_moment(source: Path) -> datetime:
     imported today.
     """
     try:
-        return datetime.fromtimestamp(source.stat().st_mtime, tz=timezone.utc)
+        return datetime.fromtimestamp(source.stat().st_mtime, tz=UTC)
     except OSError:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)

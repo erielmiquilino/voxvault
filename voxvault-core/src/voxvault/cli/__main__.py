@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC
 from pathlib import Path
 
 from ..layout import available_tracks
@@ -143,14 +144,26 @@ def _build_parser() -> argparse.ArgumentParser:
     transcribe.add_argument("--json", action="store_true")
     transcribe.set_defaults(handler=_cmd_transcribe)
 
-    bench = sub.add_parser(
-        "bench", help="Compara varias configuracoes de modelo sobre o mesmo audio."
-    )
-    bench.add_argument("arquivo", type=Path)
-    bench.add_argument("--models", default="large-v3,large-v3-turbo")
-    bench.add_argument("--language", default=None)
-    bench.add_argument("--vocabulary", default=None)
-    bench.set_defaults(handler=_cmd_bench)
+    # Two names for one command: `benchmark` is what the specification calls
+    # it, `bench` is what anyone types twenty times in an afternoon.
+    for nome in ("benchmark", "bench"):
+        bench = sub.add_parser(
+            nome,
+            help=("Compara varias configuracoes de modelo sobre o mesmo audio."
+                  if nome == "benchmark" else argparse.SUPPRESS),
+        )
+        bench.add_argument("arquivo", type=Path)
+        bench.add_argument(
+            "--config", type=Path, metavar="ARQUIVO",
+            help="Arquivo JSON com as configuracoes a comparar.",
+        )
+        bench.add_argument(
+            "--models", default="",
+            help="Modelos separados por virgula, quando nao ha arquivo.",
+        )
+        bench.add_argument("--language", default=None)
+        bench.add_argument("--vocabulary", default=None)
+        bench.set_defaults(handler=_cmd_bench)
 
     config_cmd = sub.add_parser(
         "config", help="Mostra ou altera a configuracao compartilhada."
@@ -207,7 +220,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _load(args: argparse.Namespace):
-    from ..config import load_config  # noqa: PLC0415
+    from ..config import load_config
 
     overrides = {}
     if getattr(args, "data_dir", None):
@@ -216,7 +229,7 @@ def _load(args: argparse.Namespace):
 
 
 def _open_store(config):
-    from ..store import TranscriptStore  # noqa: PLC0415
+    from ..store import TranscriptStore
 
     config.data_dir.mkdir(parents=True, exist_ok=True)
     return TranscriptStore(config.db_path)
@@ -226,13 +239,13 @@ def _open_store(config):
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    from ..doctor import format_report, run_diagnostics  # noqa: PLC0415
+    from ..doctor import format_report, run_diagnostics
 
     config = _load(args)
     report = run_diagnostics(config)
 
     if args.json:
-        import json  # noqa: PLC0415
+        import json
 
         sys.stdout.write(json.dumps({
             "itens": [
@@ -260,15 +273,20 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def _cmd_record(args: argparse.Namespace) -> int:
-    import time  # noqa: PLC0415
-    from datetime import datetime, timezone  # noqa: PLC0415
+    import time
+    from datetime import datetime
 
-    from ..capture.devices import FLOW_CAPTURE, FLOW_RENDER, resolve_endpoint, role_from_config  # noqa: PLC0415
-    from ..capture.stream import CaptureStream  # noqa: PLC0415
-    from ..config import POLICY_PINNED  # noqa: PLC0415
-    from ..session import RecordingSession  # noqa: PLC0415
-    from ..store import Origin  # noqa: PLC0415
-    from ..types import MeetingState  # noqa: PLC0415
+    from ..capture.devices import (
+        FLOW_CAPTURE,
+        FLOW_RENDER,
+        resolve_endpoint,
+        role_from_config,
+    )
+    from ..capture.stream import CaptureStream
+    from ..config import POLICY_PINNED
+    from ..session import RecordingSession
+    from ..store import Origin
+    from ..types import MeetingState
 
     config = _load(args)
     role = role_from_config(config.device_role)
@@ -337,11 +355,11 @@ def _cmd_record(args: argparse.Namespace) -> int:
     sys.stdout.write("\n\nEncerrando...\n")
     report = session.stop(compress=not args.no_compress)
 
-    from ..pipeline import TranscriptionPipeline  # noqa: PLC0415
+    from ..pipeline import TranscriptionPipeline
 
     store.finish_meeting(
         session.uid,
-        ended_at=datetime.now(timezone.utc),
+        ended_at=datetime.now(UTC),
         duration_ms=report.duration_ms,
     )
     pipeline = TranscriptionPipeline(config, store)
@@ -364,8 +382,8 @@ def _cmd_record(args: argparse.Namespace) -> int:
 
 
 def _cmd_import(args: argparse.Namespace) -> int:
-    from ..pipeline import TranscriptionPipeline  # noqa: PLC0415
-    from ..session.importing import import_media  # noqa: PLC0415
+    from ..pipeline import TranscriptionPipeline
+    from ..session.importing import import_media
 
     config = _load(args)
     store = _open_store(config)
@@ -414,7 +432,7 @@ def _meeting_json(store, meeting) -> dict:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    import json  # noqa: PLC0415
+    import json
 
     config = _load(args)
     store = _open_store(config)
@@ -466,7 +484,7 @@ def _resolve_uid(store, prefix: str) -> str:
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
-    import json  # noqa: PLC0415
+    import json
 
     config = _load(args)
     store = _open_store(config)
@@ -516,7 +534,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
-    import json  # noqa: PLC0415
+    import json
 
     config = _load(args)
     store = _open_store(config)
@@ -578,7 +596,7 @@ def _cmd_rename(args: argparse.Namespace) -> int:
         # The title is in the readable export's heading, so the file on disk
         # would otherwise keep the old one.
         try:
-            from ..store import regenerate_exports  # noqa: PLC0415
+            from ..store import regenerate_exports
 
             if store.get_meeting(uid).active_revision_id is not None:
                 regenerate_exports(store, uid)
@@ -652,7 +670,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
     changes. A meeting with no active revision has nothing to export and is
     skipped rather than failed.
     """
-    from ..store import NoteAuthor, regenerate_exports  # noqa: PLC0415
+    from ..store import NoteAuthor, regenerate_exports
 
     config = _load(args)
     store = _open_store(config)
@@ -668,7 +686,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
                 resumo = " ".join(note.content.split())
                 sys.stdout.write(
                     f"{note.uid[:8]}  {note.created_at.astimezone():%d/%m/%Y %H:%M}  "
-                    f"{str(note.kind):<11}  {note.author.describe()[:24]:<24}  "
+                    f"{note.kind!s:<11}  {note.author.describe()[:24]:<24}  "
                     f"{resumo[:60]}\n"
                 )
             return 0
@@ -706,7 +724,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    from ..store import current_export_paths  # noqa: PLC0415
+    from ..store import current_export_paths
 
     config = _load(args)
     store = _open_store(config)
@@ -728,7 +746,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_reprocess(args: argparse.Namespace) -> int:
-    from ..pipeline import TranscriptionPipeline  # noqa: PLC0415
+    from ..pipeline import TranscriptionPipeline
 
     config = _load(args)
     store = _open_store(config)
@@ -746,9 +764,9 @@ def _cmd_reprocess(args: argparse.Namespace) -> int:
 
 
 def _cmd_queue(args: argparse.Namespace) -> int:
-    import time  # noqa: PLC0415
+    import time
 
-    from ..pipeline import TranscriptionPipeline  # noqa: PLC0415
+    from ..pipeline import TranscriptionPipeline
 
     config = _load(args)
     store = _open_store(config)
@@ -794,10 +812,10 @@ def _cmd_queue(args: argparse.Namespace) -> int:
 
 
 def _cmd_transcribe(args: argparse.Namespace) -> int:
-    import json  # noqa: PLC0415
-    import time  # noqa: PLC0415
+    import json
+    import time
 
-    from ..engine import build_engine  # noqa: PLC0415
+    from ..engine import build_engine
 
     config = _load(args)
     path: Path = args.arquivo
@@ -840,8 +858,49 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bench_configurations(args: argparse.Namespace) -> tuple[list[str], list[str]]:
+    """The configurations to compare, from a file or from the command line.
+
+    The file form exists because a comparison worth making twice is worth
+    writing down: it carries a label per configuration, so the report names
+    them the way the person thinks of them rather than by model string.
+    """
+    import json
+
+    if args.config:
+        try:
+            raw = json.loads(args.config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Nao foi possivel ler as configuracoes em '{args.config}': {exc}"
+            ) from None
+        entries = raw.get("configuracoes") if isinstance(raw, dict) else raw
+        if not isinstance(entries, list) or not entries:
+            raise ValueError(
+                f"'{args.config}' precisa conter uma lista 'configuracoes', "
+                f"cada item com 'modelo' e opcionalmente 'rotulo'."
+            )
+        models, labels = [], []
+        for entry in entries:
+            if isinstance(entry, str):
+                models.append(entry)
+                labels.append(entry)
+                continue
+            modelo = entry.get("modelo") or entry.get("model")
+            if not modelo:
+                raise ValueError(
+                    f"Uma das configuracoes em '{args.config}' nao nomeia o modelo."
+                )
+            models.append(modelo)
+            labels.append(entry.get("rotulo") or entry.get("label") or modelo)
+        return models, labels
+
+    models = [m.strip() for m in (args.models or "").split(",") if m.strip()]
+    return models, models
+
+
 def _cmd_bench(args: argparse.Namespace) -> int:
-    from ..bench import run_benchmark  # noqa: PLC0415
+    from ..bench import run_benchmark
 
     config = _load(args)
     path: Path = args.arquivo
@@ -849,9 +908,12 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         sys.stderr.write(f"Arquivo nao encontrado: {path}\n")
         return 2
 
-    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    models, labels = _bench_configurations(args)
     if not models:
-        sys.stderr.write("Indique ao menos um modelo com --models.\n")
+        sys.stderr.write(
+            "Indique as configuracoes a comparar, com --config ARQUIVO ou "
+            "--models a,b.\n"
+        )
         return 2
 
     sys.stdout.write(
@@ -860,7 +922,7 @@ def _cmd_bench(args: argparse.Namespace) -> int:
         f"liberada entre elas.\n\n"
     )
     report = run_benchmark(
-        config, path, models,
+        config, path, models, labels=labels,
         language=args.language or config.language,
         vocabulary=args.vocabulary if args.vocabulary is not None else config.vocabulary,
     )
@@ -881,12 +943,12 @@ def _cmd_bench(args: argparse.Namespace) -> int:
 
 
 def _cmd_config(args: argparse.Namespace) -> int:
-    from ..config import load_config, user_config_path, write_config_file  # noqa: PLC0415
+    from ..config import load_config, user_config_path, write_config_file
 
     if not args.atribuicao:
         config = _load(args)
         if args.json:
-            import json  # noqa: PLC0415
+            import json
 
             sys.stdout.write(json.dumps({
                 "arquivo": str(user_config_path()),
@@ -928,7 +990,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 def _cmd_devices(args: argparse.Namespace) -> int:
     try:
-        from ..capture.devices import format_endpoints, list_endpoints  # noqa: PLC0415
+        from ..capture.devices import format_endpoints, list_endpoints
     except Exception as exc:
         sys.stderr.write(f"Backend de captura indisponivel: {exc}\n")
         return 1
@@ -936,7 +998,7 @@ def _cmd_devices(args: argparse.Namespace) -> int:
     endpoints = list_endpoints()
 
     if args.json:
-        import json  # noqa: PLC0415
+        import json
 
         sys.stdout.write(json.dumps({
             "dispositivos": [
@@ -961,8 +1023,8 @@ def _cmd_devices(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    from ..service import ResidentService, ServiceBusy  # noqa: PLC0415
-    from ..service.rendezvous import live_rendezvous, rendezvous_path  # noqa: PLC0415
+    from ..service import ResidentService, ServiceBusy
+    from ..service.rendezvous import live_rendezvous, rendezvous_path
 
     config = _load(args)
 
@@ -1014,10 +1076,10 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _cmd_detect(args: argparse.Namespace) -> int:
-    import json  # noqa: PLC0415
-    import time  # noqa: PLC0415
+    import json
+    import time
 
-    from ..detect import (  # noqa: PLC0415
+    from ..detect import (
         SUSTAIN_APP_S,
         SUSTAIN_BROWSER_S,
         MeetingDetector,
@@ -1095,12 +1157,12 @@ def _stop_service(*, force: bool) -> int:
     open or a queue pending, because ending would throw both away. ``--force``
     is for when the person has decided otherwise, and it says what that costs.
     """
-    import json  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import urllib.error  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
+    import json
+    import subprocess
+    import urllib.error
+    import urllib.request
 
-    from ..service.rendezvous import SECRET_HEADER, live_rendezvous  # noqa: PLC0415
+    from ..service.rendezvous import SECRET_HEADER, live_rendezvous
 
     found = live_rendezvous()
     if found is None:
@@ -1155,7 +1217,12 @@ def _stop_service(*, force: bool) -> int:
 
 
 def _cmd_mcp(args: argparse.Namespace) -> int:
-    from ..mcp.install import apply, inspect, known_clients, render_snippet  # noqa: PLC0415
+    from ..mcp.install import (
+        apply,
+        inspect,
+        known_clients,
+        render_snippet,
+    )
 
     config = _load(args)
     sys.stdout.write(
@@ -1215,7 +1282,7 @@ def _force_utf8_output() -> None:
     if sys.platform != "win32":
         return
     try:
-        import ctypes  # noqa: PLC0415
+        import ctypes
 
         ctypes.windll.kernel32.SetConsoleOutputCP(65001)
     except Exception:
@@ -1237,7 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("\nInterrompido.\n")
         return 130
     except Exception as exc:
-        from ..errors import VoxVaultError  # noqa: PLC0415
+        from ..errors import VoxVaultError
 
         if isinstance(exc, VoxVaultError):
             sys.stderr.write(f"{exc}\n")

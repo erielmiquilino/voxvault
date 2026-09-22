@@ -7,7 +7,7 @@ that fails half the time.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -21,9 +21,9 @@ from voxvault.types import EngineInfo, Segment, Track
 def history(store: TranscriptStore, tmp_path: Path, engine: EngineInfo):
     """Three meetings across three months, each mentioning the same subject."""
     moments = [
-        datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
-        datetime(2026, 2, 15, 9, 0, tzinfo=timezone.utc),
-        datetime(2026, 3, 15, 9, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+        datetime(2026, 2, 15, 9, 0, tzinfo=UTC),
+        datetime(2026, 3, 15, 9, 0, tzinfo=UTC),
     ]
     texts = [
         ("a reunião de janeiro tratou do orçamento", "concordamos com a proposta"),
@@ -31,7 +31,7 @@ def history(store: TranscriptStore, tmp_path: Path, engine: EngineInfo):
         ("a REUNIÃO de março fechou o Orçamento", "obrigado a todos"),
     ]
     for index, (moment, (mic_text, system_text)) in enumerate(
-        zip(moments, texts), start=1
+        zip(moments, texts, strict=False), start=1
     ):
         uid = f"reuniao-{index}"
         make_meeting(store, tmp_path, uid=uid, started_at=moment, title=f"Encontro {index}")
@@ -89,8 +89,8 @@ def test_search_is_case_insensitive(history) -> None:
 def test_search_can_be_restricted_to_a_date_range(history) -> None:
     hits = history.search(
         "reuniao",
-        since=datetime(2026, 2, 1, tzinfo=timezone.utc),
-        until=datetime(2026, 2, 28, tzinfo=timezone.utc),
+        since=datetime(2026, 2, 1, tzinfo=UTC),
+        until=datetime(2026, 2, 28, tzinfo=UTC),
     )
     assert uids(hits) == ["reuniao-2"]
 

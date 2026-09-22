@@ -133,8 +133,9 @@ def test_a_note_result_does_not_invent_an_instant(server, make_meeting) -> None:
 
 def test_reprocessing_keeps_the_notes(server, store, make_meeting) -> None:
     """The property that makes notes worth writing at all."""
-    from .conftest import ENGINE
     from voxvault.types import Segment
+
+    from .conftest import ENGINE
 
     make_meeting("r1")
     created = _note(server, "r1", conteudo="Vale depois do reprocessamento.")

@@ -8,7 +8,7 @@ never shown as current in the meantime.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -28,7 +28,7 @@ from voxvault.store import (
     regenerate_exports,
     timeline_from_structured,
 )
-from voxvault.types import EngineInfo, Segment, Track
+from voxvault.types import EngineInfo, Segment
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ def test_the_structured_export_round_trips_the_timeline_without_loss(
     rebuilt = timeline_from_structured(payload)
     assert rebuilt == exported.timeline("reuniao-1")
 
-    for item, entry in zip(payload["segmentos"], rebuilt):
+    for item, entry in zip(payload["segmentos"], rebuilt, strict=False):
         assert item["trilha"] in {"mic", "system"}
         assert item["inicio_ms"] == entry.start_ms
         assert item["fim_ms"] == entry.end_ms
@@ -142,7 +142,7 @@ def test_process_killed_between_publishing_and_regenerating(
         store.create_meeting(
             uid="reuniao-queda",
             title="Reuniao interrompida",
-            started_at=datetime(2026, 5, 4, 10, 0, tzinfo=timezone.utc),
+            started_at=datetime(2026, 5, 4, 10, 0, tzinfo=UTC),
             directory=directory,
         )
     first = result_of(spawn("seed_and_export", str(db_path), "reuniao-queda"))

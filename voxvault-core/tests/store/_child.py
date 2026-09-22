@@ -18,7 +18,7 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from voxvault.errors import StorageBusyError, StorageError
@@ -149,7 +149,7 @@ def write_meetings(db: str, prefix: str, count: str, barrier: str = "") -> None:
             store.create_meeting(
                 uid=uid,
                 title=f"Reuniao {uid}",
-                started_at=datetime.now(timezone.utc),
+                started_at=datetime.now(UTC),
                 directory=str(Path(db).parent / uid),
                 origin=Origin.RECORDED,
             )

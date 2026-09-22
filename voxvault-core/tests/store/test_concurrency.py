@@ -8,11 +8,18 @@ one writer SQLite actually admits.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from conftest import make_meeting, read_json_line, result_of, spawn, transcribe, wait_ready
+from conftest import (
+    make_meeting,
+    read_json_line,
+    result_of,
+    spawn,
+    transcribe,
+    wait_ready,
+)
 
 from voxvault.errors import StorageBusyError, StorageError
 from voxvault.store import (
@@ -23,7 +30,6 @@ from voxvault.store import (
     in_capture_path,
 )
 from voxvault.types import EngineInfo, Segment, Track
-
 
 # -- readers are never blocked by a writer -------------------------------
 
@@ -139,7 +145,7 @@ def test_contention_beyond_the_budget_fails_explicitly_and_writes_nothing(
             store.create_meeting(
                 uid="perdida",
                 title="Nao deve existir",
-                started_at=datetime.now(timezone.utc),
+                started_at=datetime.now(UTC),
                 directory=tmp_path / "perdida",
             )
         elapsed = time.perf_counter() - started
@@ -240,7 +246,7 @@ def test_a_synchronous_write_from_the_capture_path_is_refused(
             store.create_meeting(
                 uid="do-callback",
                 title="Nunca",
-                started_at=datetime.now(timezone.utc),
+                started_at=datetime.now(UTC),
                 directory=tmp_path / "do-callback",
             )
         assert "AsyncWriter" in str(caught.value)
@@ -259,7 +265,7 @@ def test_the_writer_accepts_work_from_the_capture_path(
                 lambda store: store.create_meeting(
                     uid="da-captura",
                     title="Gravacao em andamento",
-                    started_at=datetime.now(timezone.utc),
+                    started_at=datetime.now(UTC),
                     directory=tmp_path / "da-captura",
                     origin=Origin.RECORDED,
                 ),
@@ -346,7 +352,7 @@ def test_the_writer_records_a_failure_instead_of_killing_its_thread(
             lambda store: store.create_meeting(
                 uid="depois-da-falha",
                 title="Segue viva",
-                started_at=datetime.now(timezone.utc),
+                started_at=datetime.now(UTC),
                 directory=tmp_path / "depois",
             ),
             label="sucesso",

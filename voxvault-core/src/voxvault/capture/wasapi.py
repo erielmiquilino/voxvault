@@ -195,14 +195,7 @@ def _guid(text: str) -> GUID:
 def guid_to_str(g: GUID) -> str:
     tail = bytes(b & 0xFF for b in g.Data4)
     return (
-        "{%08X-%04X-%04X-%s-%s}"
-        % (
-            g.Data1 & 0xFFFFFFFF,
-            g.Data2 & 0xFFFF,
-            g.Data3 & 0xFFFF,
-            tail[:2].hex().upper(),
-            tail[2:].hex().upper(),
-        )
+        f"{{{g.Data1 & 0xFFFFFFFF:08X}-{g.Data2 & 0xFFFF:04X}-{g.Data3 & 0xFFFF:04X}-{tail[:2].hex().upper()}-{tail[2:].hex().upper()}}}"
     )
 
 
@@ -393,10 +386,10 @@ class ComPtr:
             self._release(self.this)
             self.this = c_void_p(0)
 
-    def __enter__(self):  # noqa: D105
+    def __enter__(self):
         return self
 
-    def __exit__(self, *exc: object) -> None:  # noqa: D105
+    def __exit__(self, *exc: object) -> None:
         self.release()
 
 
@@ -411,7 +404,7 @@ class IMMDeviceCollection(ComPtr):
         check(self._GetCount(self.this, byref(n)), "IMMDeviceCollection::GetCount")
         return n.value
 
-    def item(self, index: int) -> "IMMDevice":
+    def item(self, index: int) -> IMMDevice:
         p = c_void_p()
         check(self._Item(self.this, index, byref(p)), "IMMDeviceCollection::Item")
         return IMMDevice(p)
@@ -485,7 +478,7 @@ class IMMDevice(ComPtr):
         )
         return IPropertyStore(p)
 
-    def activate_audio_client(self) -> "IAudioClient":
+    def activate_audio_client(self) -> IAudioClient:
         p = c_void_p()
         check(
             self._Activate(
@@ -532,13 +525,13 @@ class IMMDeviceEnumerator(ComPtr):
             return None
         return IMMDevice(p)
 
-    def register_notifications(self, client: "NotificationClient") -> None:
+    def register_notifications(self, client: NotificationClient) -> None:
         check(
             self._RegisterEndpointNotificationCallback(self.this, client.interface),
             "IMMDeviceEnumerator::RegisterEndpointNotificationCallback",
         )
 
-    def unregister_notifications(self, client: "NotificationClient") -> None:
+    def unregister_notifications(self, client: NotificationClient) -> None:
         self._UnregisterEndpointNotificationCallback(self.this, client.interface)
 
 
@@ -643,7 +636,7 @@ class IAudioClient(ComPtr):
     def reset(self) -> None:
         self._Reset(self.this)
 
-    def capture_client(self) -> "IAudioCaptureClient":
+    def capture_client(self) -> IAudioCaptureClient:
         p = c_void_p()
         check(
             self._GetService(self.this, byref(IID_IAudioCaptureClient), byref(p)),
@@ -651,7 +644,7 @@ class IAudioClient(ComPtr):
         )
         return IAudioCaptureClient(p)
 
-    def render_client(self) -> "IAudioRenderClient":
+    def render_client(self) -> IAudioRenderClient:
         p = c_void_p()
         check(
             self._GetService(self.this, byref(IID_IAudioRenderClient), byref(p)),

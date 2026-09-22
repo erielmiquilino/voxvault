@@ -34,7 +34,7 @@ class ThreadLocalStore:
         self,
         db_path: Path,
         *,
-        factory: Callable[[Path], "TranscriptStore"] | None = None,
+        factory: Callable[[Path], TranscriptStore] | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self._factory = factory
@@ -42,16 +42,16 @@ class ThreadLocalStore:
         self._all: list = []
         self._lock = threading.Lock()
 
-    def _build(self) -> "TranscriptStore":
+    def _build(self) -> TranscriptStore:
         if self._factory is not None:
             return self._factory(self.db_path)
-        from .store import TranscriptStore  # noqa: PLC0415
+        from .store import TranscriptStore
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         return TranscriptStore(self.db_path)
 
     @property
-    def handle(self) -> "TranscriptStore":
+    def handle(self) -> TranscriptStore:
         existing = getattr(self._local, "store", None)
         if existing is not None:
             return existing

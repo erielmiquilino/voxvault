@@ -157,7 +157,7 @@ class TranscriptionPipeline:
         store,
         *,
         on_event: Callable[[str, str], None] | None = None,
-        worker_factory: Callable[[Config, str | None], "_Worker"] | None = None,
+        worker_factory: Callable[[Config, str | None], _Worker] | None = None,
     ) -> None:
         self._config = config
         self._store = store
@@ -192,7 +192,7 @@ class TranscriptionPipeline:
         if threading.current_thread() is self._owner:
             return self._store
         if self._handles is None:
-            from ..store import ThreadLocalStore  # noqa: PLC0415
+            from ..store import ThreadLocalStore
 
             self._handles = ThreadLocalStore(self._config.db_path)
         return self._handles.handle
@@ -437,11 +437,11 @@ class TranscriptionPipeline:
 
     def _regenerate_exports(self, meeting_uid: str) -> None:
         try:
-            from ..store import regenerate_exports  # noqa: PLC0415
+            from ..store import regenerate_exports
 
             regenerate_exports(self._db, meeting_uid)
         except Exception as exc:  # exports are derived; never fail the meeting
             self._on_event("aviso", f"exportacoes de {meeting_uid}: {exc}")
 
 
-__all__ = ["INTERRUPT_BUDGET_S", "QueueRefused", "TranscriptionPipeline", "TrackOutcome"]
+__all__ = ["INTERRUPT_BUDGET_S", "QueueRefused", "TrackOutcome", "TranscriptionPipeline"]

@@ -172,7 +172,7 @@ class AsyncWriter:
     def _run(self) -> None:
         try:
             store = TranscriptStore(self.path, busy_timeout_s=self.busy_timeout_s)
-        except BaseException as exc:  # noqa: BLE001 - reported to start()
+        except BaseException as exc:
             self._start_error = exc
             self._ready.set()
             return
@@ -188,7 +188,7 @@ class AsyncWriter:
                 operation, label = item
                 try:
                     operation(store)
-                except BaseException as exc:  # noqa: BLE001 - never kill the thread
+                except BaseException as exc:
                     with self._lock:
                         self._failed += 1
                         self._failures.append(WriteFailure(label, str(exc)))

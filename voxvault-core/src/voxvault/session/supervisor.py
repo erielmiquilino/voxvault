@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from ..config import POLICY_PINNED
-from ..errors import CaptureError
 
 #: Poll period. Well inside the five-second detection budget, and one endpoint
 #: enumeration every couple of seconds costs nothing measurable.
@@ -167,7 +166,7 @@ class DeviceSupervisor:
             )
 
     def _current_default(self, watch: TrackWatch):
-        from ..capture.devices import default_endpoint  # noqa: PLC0415
+        from ..capture.devices import default_endpoint
 
         try:
             return default_endpoint(watch.flow, watch.role)
@@ -190,8 +189,8 @@ class DeviceSupervisor:
         self._try_recover(watch, to_device=to_device)
 
     def _try_recover(self, watch: TrackWatch, to_device: str = "") -> None:
-        from ..capture.devices import FLOW_RENDER, resolve_endpoint  # noqa: PLC0415
-        from ..capture.stream import CaptureStream  # noqa: PLC0415
+        from ..capture.devices import FLOW_RENDER, resolve_endpoint
+        from ..capture.stream import CaptureStream
 
         elapsed = time.monotonic() - watch.recovering_since
         try:

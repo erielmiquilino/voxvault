@@ -11,9 +11,14 @@ from pathlib import Path
 
 from conftest import make_meeting, transcribe
 
-from voxvault.store import TranscriptStore, find_overlaps, format_duration, format_offset
-from voxvault.store import overlapping_ids
-from voxvault.types import EngineInfo, Segment, Speaker, Track
+from voxvault.store import (
+    TranscriptStore,
+    find_overlaps,
+    format_duration,
+    format_offset,
+    overlapping_ids,
+)
+from voxvault.types import EngineInfo, Segment, Speaker
 
 
 def test_the_two_tracks_are_interleaved_by_start_instant(

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Final
 
 from ..types import MeetingState, RevisionState, Speaker, Track
@@ -98,17 +98,17 @@ TRACK_TO_SPEAKER_TEXT: Final[dict[str, str]] = {
 
 
 def now_ms() -> int:
-    return int(datetime.now(timezone.utc).timestamp() * 1000)
+    return int(datetime.now(UTC).timestamp() * 1000)
 
 
 def to_ms(moment: datetime) -> int:
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
+        moment = moment.replace(tzinfo=UTC)
     return int(moment.timestamp() * 1000)
 
 
 def from_ms(value: int) -> datetime:
-    return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(value / 1000, tz=UTC)
 
 
 @dataclass(frozen=True, slots=True)

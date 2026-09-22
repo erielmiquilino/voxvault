@@ -41,7 +41,7 @@ _ENGINES = {
 
 
 def build_engine(
-    config: "Config", *, name: str = "faster-whisper", model: str | None = None
+    config: Config, *, name: str = "faster-whisper", model: str | None = None
 ) -> TranscriptionEngine:
     """Construct the configured engine without importing the others."""
     try:

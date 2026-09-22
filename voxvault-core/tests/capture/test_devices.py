@@ -10,12 +10,12 @@ pytestmark = pytest.mark.skipif(
     sys.platform != "win32", reason="WASAPI so existe no Windows"
 )
 
-from voxvault.capture import devices  # noqa: E402
-from voxvault.config import (  # noqa: E402
+from voxvault.capture import devices
+from voxvault.config import (
     DEVICE_ROLE_COMMUNICATIONS,
     DEVICE_ROLE_MULTIMEDIA,
 )
-from voxvault.errors import CaptureError  # noqa: E402
+from voxvault.errors import CaptureError
 
 
 def test_the_configured_role_names_map_onto_windows_roles():

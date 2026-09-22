@@ -22,9 +22,11 @@ pytestmark = [
     pytest.mark.skipif(sys.platform != "win32", reason="WASAPI so existe no Windows"),
 ]
 
-from voxvault.capture.anchor import Anchor, TrackPlacer  # noqa: E402
-from voxvault.capture.gate import CpuLoad, TonePlayer  # noqa: E402
-from voxvault.capture.stream import CaptureStream, prewarm  # noqa: E402
+import itertools
+
+from voxvault.capture.anchor import Anchor, TrackPlacer
+from voxvault.capture.gate import CpuLoad, TonePlayer
+from voxvault.capture.stream import CaptureStream, prewarm
 
 CAPTURE_SECONDS = 3.0
 
@@ -54,7 +56,7 @@ def _capture(endpoint, *, loopback, seconds=CAPTURE_SECONDS, **kwargs):
 
 def test_loopback_delivers_the_three_required_data_points(render_endpoint):
     """Task 2.0.1, as a test rather than as a report."""
-    stream, collected = _capture(render_endpoint, loopback=True)
+    _stream, collected = _capture(render_endpoint, loopback=True)
     assert collected, "nenhum pacote capturado do loopback"
 
     usable = [p for p, _ in collected if p.timestamp_valid]
@@ -76,7 +78,7 @@ def test_the_reported_instant_follows_the_device_position(render_endpoint):
     rate = stream.format.sample_rate
 
     steps = []
-    for previous, current in zip(usable, usable[1:]):
+    for previous, current in itertools.pairwise(usable):
         advance = current.device_position - previous.device_position
         implied = advance * 1_000_000_000 // rate
         steps.append(abs((current.qpc_ns - previous.qpc_ns) - implied))
@@ -167,7 +169,7 @@ def test_a_provoked_overrun_is_visible_in_the_device_position(render_endpoint):
 
     rate = stream.format.sample_rate
     jumps = []
-    for previous, current in zip(collected, collected[1:]):
+    for previous, current in itertools.pairwise(collected):
         missing = current.device_position - (
             previous.device_position + previous.frames
         )
@@ -224,7 +226,7 @@ def test_loopback_is_idle_while_nothing_plays(render_endpoint):
 
 def test_microphone_delivers_the_three_data_points(capture_endpoint):
     """Skipped where no capture endpoint exists, never passed vacuously."""
-    stream, collected = _capture(capture_endpoint, loopback=False)
+    _stream, collected = _capture(capture_endpoint, loopback=False)
     assert collected, "nenhum pacote capturado do microfone"
     usable = [p for p, _ in collected if p.timestamp_valid]
     assert usable

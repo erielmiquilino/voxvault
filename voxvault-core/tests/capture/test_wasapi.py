@@ -16,8 +16,8 @@ pytestmark = pytest.mark.skipif(
     sys.platform != "win32", reason="WASAPI so existe no Windows"
 )
 
-from voxvault.capture import wasapi  # noqa: E402
-from voxvault.errors import CaptureError, DeviceLostError  # noqa: E402
+from voxvault.capture import wasapi
+from voxvault.errors import CaptureError, DeviceLostError
 
 
 def test_guid_round_trips_through_its_canonical_spelling():

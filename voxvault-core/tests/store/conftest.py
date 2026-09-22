@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -23,7 +23,7 @@ from voxvault.types import EngineInfo, MeetingState, Segment, Track
 
 CHILD = Path(__file__).with_name("_child.py")
 
-BASE_TIME = datetime(2026, 3, 2, 14, 0, tzinfo=timezone.utc)
+BASE_TIME = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -97,12 +97,14 @@ def transcribe(
     *,
     mic: list[Segment] | None = None,
     system: list[Segment] | None = None,
-    tracks_failed: list[Track] = [],
+    tracks_failed: list[Track] | None = None,
     failure_reason: str = "",
     vocabulary: str = "",
     language: str = "pt",
 ):
     """One complete transcription attempt, start to publication."""
+    if tracks_failed is None:
+        tracks_failed = []
     revision = store.begin_revision(
         uid, engine=engine, vocabulary=vocabulary, language=language
     )

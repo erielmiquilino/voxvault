@@ -83,7 +83,7 @@ class TranscriptionEngine(Protocol):
         *,
         language: str = "pt",
         vocabulary: str = "",
-        should_stop: "StopCheck | None" = None,
+        should_stop: StopCheck | None = None,
     ) -> TranscriptionResult:
         """Transcribe a file.
 

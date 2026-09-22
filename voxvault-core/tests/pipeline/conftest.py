@@ -9,7 +9,7 @@ failing track does not stop the other one would test the wrong thing.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -20,7 +20,7 @@ from voxvault.pipeline import TrackOutcome
 from voxvault.store import Origin, TranscriptStore
 from voxvault.types import EngineInfo, MeetingState, Segment
 
-BASE_TIME = datetime(2026, 3, 2, 14, 0, tzinfo=timezone.utc)
+BASE_TIME = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
 
 ENGINE = EngineInfo(
     name="falso", model="modelo-de-teste", compute_type="int8",

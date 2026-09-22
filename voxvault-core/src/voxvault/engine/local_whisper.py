@@ -16,6 +16,7 @@ Two settings here are not tuning knobs but correctness requirements:
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -119,8 +120,8 @@ class LocalWhisperEngine:
                     text = (item.text or "").strip()
                     if not text:
                         continue  # the contract forbids empty segments
-                    start_ms = max(0, int(round(item.start * 1000)))
-                    end_ms = int(round(item.end * 1000))
+                    start_ms = max(0, round(item.start * 1000))
+                    end_ms = round(item.end * 1000)
                     if end_ms <= start_ms:
                         end_ms = start_ms + 1
                     collected.append(Segment(start_ms, end_ms, text))
@@ -168,17 +169,17 @@ class LocalWhisperEngine:
             # Must happen before the runtime is imported: on Windows the
             # pip-shipped cuBLAS and cuDNN are invisible to the loader
             # otherwise, and the failure only appears at model construction.
-            from .cuda_runtime import prepare_cuda_dll_path  # noqa: PLC0415
+            from .cuda_runtime import prepare_cuda_dll_path
 
             prepare_cuda_dll_path()
 
         try:
-            from faster_whisper import WhisperModel  # noqa: PLC0415
+            from faster_whisper import WhisperModel
         except ImportError as exc:
             raise MissingPrerequisiteError("faster-whisper", str(exc)) from exc
 
         try:
-            import ctranslate2  # noqa: PLC0415
+            import ctranslate2
 
             self._version = getattr(ctranslate2, "__version__", "")
         except ImportError:
@@ -186,6 +187,14 @@ class LocalWhisperEngine:
 
         download_root = self._config.models_dir
         download_root.mkdir(parents=True, exist_ok=True)
+
+        # The model cache symlinks by default, and creating a symlink on
+        # Windows needs Developer Mode or elevation. Without this, downloading
+        # a model fails with "the client does not have the required privilege"
+        # -- on a machine where everything else works. Copying costs disk and
+        # always succeeds, which is the right trade for a cache.
+        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
         started = time.monotonic()
         try:

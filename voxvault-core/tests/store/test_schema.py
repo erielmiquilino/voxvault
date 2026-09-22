@@ -15,7 +15,7 @@ def columns(store: TranscriptStore, table: str) -> set[str]:
 
 
 def test_new_database_has_every_expected_table(store: TranscriptStore) -> None:
-    assert EXPECTED_TABLES <= store.tables()
+    assert store.tables() >= EXPECTED_TABLES
 
 
 def test_new_database_is_at_the_current_schema_version(store: TranscriptStore) -> None:

@@ -10,7 +10,7 @@ the database and checks what the command actually did.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -25,7 +25,7 @@ from voxvault.store import (
 )
 from voxvault.types import EngineInfo, Segment, Track
 
-BASE_TIME = datetime(2026, 3, 2, 14, 0, tzinfo=timezone.utc)
+BASE_TIME = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -160,7 +160,7 @@ def test_notes_remove_deletes_only_that_note(data_dir: Path, capsys) -> None:
         "--content", "Fica.")
     run(data_dir, "notes", "add", "reuniao-1", "--type", "livre",
         "--content", "Sai.")
-    doomed = [n for n in notes_in(data_dir) if n.content == "Sai."][0]
+    doomed = next(n for n in notes_in(data_dir) if n.content == "Sai.")
     capsys.readouterr()
 
     assert run(data_dir, "notes", "remove", doomed.uid) == 0

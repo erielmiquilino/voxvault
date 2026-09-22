@@ -27,7 +27,6 @@ from voxvault.mcp.pagination import (
     paginate_text,
 )
 
-
 # -- cursors -----------------------------------------------------------
 
 def test_a_cursor_round_trips() -> None:

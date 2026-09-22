@@ -46,7 +46,7 @@ class Rendezvous:
         }
 
     @classmethod
-    def from_dict(cls, raw: dict) -> "Rendezvous":
+    def from_dict(cls, raw: dict) -> Rendezvous:
         return cls(
             endereco=str(raw.get("endereco", "")),
             segredo=str(raw.get("segredo", "")),

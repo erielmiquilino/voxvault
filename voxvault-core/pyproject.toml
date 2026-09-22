@@ -53,3 +53,32 @@ markers = [
     "gpu: exige GPU NVIDIA disponivel",
     "slow: leva mais de 30 segundos",
 ]
+
+[tool.ruff]
+line-length = 90
+target-version = "py312"
+
+[tool.ruff.lint]
+# Deliberately not the full default set: this codebase prefers explaining a
+# choice in prose over silencing a rule, so the rules enabled here are the ones
+# that catch real mistakes rather than style opinions.
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",    # line length is handled by the formatter, not by failing a build
+    "B008",    # argparse and dataclass defaults legitimately call functions
+    "RUF001",  # pt-BR strings contain characters this rule flags as ambiguous
+    "RUF002",
+    "RUF003",
+    # try/except/pass in a cleanup path is deliberate here and always carries a
+    # comment saying why the failure is being swallowed. contextlib.suppress
+    # would hide that explanation behind a name.
+    "SIM105",
+    # The generic in build_page predates PEP 695 syntax and reads fine.
+    "UP047",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "SIM117", "E402"]
+# WavFile deliberately holds the file open across calls: it is appended to for
+# the length of a meeting, and a context manager would defeat the point.
+"src/voxvault/session/wavfile.py" = ["SIM115"]

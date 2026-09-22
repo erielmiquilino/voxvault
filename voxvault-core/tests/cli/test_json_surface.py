@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -68,7 +68,7 @@ def meeting(store, data_dir: Path):
     (directory / "system.wav").write_bytes(b"RIFF....WAVEfmt ")
     created = store.create_meeting(
         uid="r1", title="Alinhamento", directory=directory,
-        started_at=datetime(2026, 3, 2, 14, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 3, 2, 14, 0, tzinfo=UTC),
         origin=Origin.RECORDED, state=MeetingState.RECORDED, duration_ms=60_000,
     )
     revision = store.begin_revision("r1", engine=ENGINE, language="pt")
@@ -234,7 +234,7 @@ def test_remove_audio_is_refused_without_a_transcript(data_dir, store):
     (directory / "mic.wav").write_bytes(b"RIFF....WAVEfmt ")
     store.create_meeting(
         uid="sem-texto", title="Nunca transcrita", directory=directory,
-        started_at=datetime(2026, 3, 2, 14, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 3, 2, 14, 0, tzinfo=UTC),
         origin=Origin.RECORDED, state=MeetingState.RECORDED,
     )
     store.close()

@@ -83,7 +83,7 @@ def require_ffmpeg() -> str:
 def already_normalized(path: Path) -> bool:
     """True when the file is already 16 kHz mono 16-bit PCM."""
     try:
-        import soundfile as sf  # noqa: PLC0415  (lazy: keeps CLI startup cheap)
+        import soundfile as sf
 
         info = sf.info(str(path))
     except Exception:
@@ -98,11 +98,11 @@ def already_normalized(path: Path) -> bool:
 def probe_duration_ms(path: Path) -> int | None:
     """Duration in milliseconds, or None when it cannot be determined."""
     with contextlib.suppress(Exception):
-        import soundfile as sf  # noqa: PLC0415
+        import soundfile as sf
 
         info = sf.info(str(path))
         if info.samplerate:
-            return int(round(info.frames / info.samplerate * 1000))
+            return round(info.frames / info.samplerate * 1000)
 
     exe = find_ffprobe()
     if not exe:
@@ -119,7 +119,7 @@ def probe_duration_ms(path: Path) -> int | None:
     if out.returncode != 0 or not text:
         return None
     try:
-        return int(round(float(text) * 1000))
+        return round(float(text) * 1000)
     except ValueError:
         return None
 
@@ -207,8 +207,8 @@ def verify_lossless(original: Path, compressed: Path) -> bool:
     unverified conversion is not a recoverable mistake.
     """
     try:
-        import numpy as np  # noqa: PLC0415
-        import soundfile as sf  # noqa: PLC0415
+        import numpy as np
+        import soundfile as sf
 
         a, rate_a = sf.read(str(original), dtype="int16", always_2d=True)
         b, rate_b = sf.read(str(compressed), dtype="int16", always_2d=True)

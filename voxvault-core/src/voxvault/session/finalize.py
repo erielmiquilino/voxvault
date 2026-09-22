@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC
 from enum import StrEnum
 from pathlib import Path
 
@@ -90,7 +91,7 @@ class Metadata:
         }
 
     @classmethod
-    def from_dict(cls, raw: dict) -> "Metadata":
+    def from_dict(cls, raw: dict) -> Metadata:
         return cls(
             uid=raw.get("uid", ""),
             title=raw.get("titulo", ""),
@@ -263,9 +264,9 @@ def pending_finalizations(data_dir: Path) -> list[Path]:
 
 
 def now_iso() -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 __all__ = [
@@ -275,8 +276,8 @@ __all__ = [
     "finalize_session",
     "now_iso",
     "pending_finalizations",
-    "read_metadata",
     "reached",
+    "read_metadata",
     "record_step",
     "write_metadata",
 ]

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -244,7 +244,7 @@ def render_structured(
     payload: dict[str, Any] = {
         "formato": STRUCTURED_FORMAT,
         "versao": STRUCTURED_VERSION,
-        "gerado_em": datetime.now(timezone.utc).isoformat(),
+        "gerado_em": datetime.now(UTC).isoformat(),
         "revisao": {
             "uid": revision.uid,
             "estado": str(revision.state) if revision.state else "",

@@ -29,10 +29,9 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 from .. import __version__
 from ..config import Config, load_config
@@ -89,7 +88,7 @@ class ResidentService:
 
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or load_config()
-        self.started_at = datetime.now(timezone.utc)
+        self.started_at = datetime.now(UTC)
         self._claim: exclusivity.Claim | None = None
         self._store = None
         self._pipeline = None
@@ -117,7 +116,7 @@ class ResidentService:
         """One connection per thread: the HTTP server answers each request on
         its own worker, and a sqlite3 connection belongs to its opener."""
         if self._store is None:
-            from ..store import ThreadLocalStore  # noqa: PLC0415
+            from ..store import ThreadLocalStore
 
             self.config.data_dir.mkdir(parents=True, exist_ok=True)
             self._store = ThreadLocalStore(self.config.db_path)
@@ -126,7 +125,7 @@ class ResidentService:
     @property
     def pipeline(self):
         if self._pipeline is None:
-            from ..pipeline import TranscriptionPipeline  # noqa: PLC0415
+            from ..pipeline import TranscriptionPipeline
 
             self._pipeline = TranscriptionPipeline(
                 self.config, self.store, on_event=self._record_event
@@ -146,7 +145,7 @@ class ResidentService:
         """
         summary = {"finalizacoes": 0, "tentativas": 0, "exportacoes": 0}
 
-        from ..session.finalize import (  # noqa: PLC0415
+        from ..session.finalize import (
             finalize_session,
             now_iso,
             pending_finalizations,
@@ -172,7 +171,7 @@ class ResidentService:
         summary["tentativas"] = self.pipeline.recover_pending()
 
         try:
-            from ..store import reconcile_exports  # noqa: PLC0415
+            from ..store import reconcile_exports
 
             summary["exportacoes"] = len(reconcile_exports(self.store))
         except Exception as exc:
@@ -237,13 +236,13 @@ class ResidentService:
         anything.
         """
         def warm() -> None:
-            from ..capture.devices import (  # noqa: PLC0415
+            from ..capture.devices import (
                 FLOW_CAPTURE,
                 FLOW_RENDER,
                 default_endpoint,
                 role_from_config,
             )
-            from ..capture.stream import prewarm  # noqa: PLC0415
+            from ..capture.stream import prewarm
 
             role = role_from_config(self.config.device_role)
             for flow, loopback in ((FLOW_CAPTURE, False), (FLOW_RENDER, True)):
@@ -264,7 +263,7 @@ class ResidentService:
 
     def _watch_power(self) -> None:
         """React to suspend by making the recording durable, and nothing else."""
-        from .power import DURABLE_MINIMUM_MS, PowerWatcher  # noqa: PLC0415
+        from .power import PowerWatcher
 
         watcher = PowerWatcher(
             on_suspend=self._on_suspend, on_resume=self._on_resume
@@ -289,7 +288,7 @@ class ResidentService:
             return
         elapsed = session.durable_minimum("suspensao do sistema")
         self._suspended_session = session.uid
-        from .power import DURABLE_MINIMUM_MS  # noqa: PLC0415
+        from .power import DURABLE_MINIMUM_MS
 
         self._record_event(
             "suspensao",
@@ -385,7 +384,7 @@ class ResidentService:
     @property
     def detector(self):
         if self._detector is None:
-            from ..detect import MeetingDetector  # noqa: PLC0415
+            from ..detect import MeetingDetector
 
             self._detector = MeetingDetector()
         return self._detector
@@ -397,7 +396,7 @@ class ResidentService:
         sustained period is measured in wall clock, so polling more or less
         often changes nothing about when a detection becomes valid.
         """
-        from ..detect import candidates  # noqa: PLC0415
+        from ..detect import candidates
 
         available, reason = self.detector.available()
         if not available:
@@ -467,19 +466,18 @@ class ResidentService:
         # missed budget is reported rather than hidden.
         released = self.pipeline.suspend_for_recording()
 
-        from ..capture.devices import (  # noqa: PLC0415
+        from ..capture.devices import (
             FLOW_CAPTURE,
             FLOW_RENDER,
             resolve_endpoint,
             role_from_config,
         )
-        from ..capture.stream import CaptureStream  # noqa: PLC0415
-        from ..config import POLICY_PINNED  # noqa: PLC0415
-        from ..session import RecordingSession  # noqa: PLC0415
-        from ..store import Origin  # noqa: PLC0415
-        from ..types import MeetingState  # noqa: PLC0415
-
-        from ..session.supervisor import TrackWatch  # noqa: PLC0415
+        from ..capture.stream import CaptureStream
+        from ..config import POLICY_PINNED
+        from ..session import RecordingSession
+        from ..session.supervisor import TrackWatch
+        from ..store import Origin
+        from ..types import MeetingState
 
         role = role_from_config(self.config.device_role)
         streams: dict[str, object] = {}
@@ -571,12 +569,12 @@ class ResidentService:
 
         report = session.stop(submit=lambda: self._enqueue_quietly(session.uid))
 
-        from ..types import MeetingState  # noqa: PLC0415
+        from ..types import MeetingState
 
         try:
             self.store.finish_meeting(
                 session.uid,
-                ended_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(UTC),
                 duration_ms=report.duration_ms,
                 state=MeetingState.RECORDED,
             )
@@ -602,7 +600,7 @@ def _make_handler(service: ResidentService):
         protocol_version = "HTTP/1.1"
         server_version = f"VoxVault/{__version__}"
 
-        def log_message(self, *args) -> None:  # noqa: D102
+        def log_message(self, *args) -> None:
             """Silence the default stderr logging; the service has its own."""
 
         # -- plumbing --------------------------------------------------
@@ -654,10 +652,10 @@ def _make_handler(service: ResidentService):
                     "erro": f"{type(exc).__name__}: {exc}"
                 })
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             self._dispatch("GET")
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             self._dispatch("POST")
 
     return Handler

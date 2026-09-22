@@ -12,6 +12,8 @@ Nothing about that looks wrong until someone plays the audio back.
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from voxvault.capture.format import StreamFormat
@@ -82,7 +84,7 @@ def test_positions_are_rescaled_into_the_delivered_frame_units() -> None:
     emitted = _feed(stream, step=160, packets=CALIBRATION_PACKETS + 8)
 
     assert len(emitted) == CALIBRATION_PACKETS + 8
-    for earlier, later in zip(emitted, emitted[1:]):
+    for earlier, later in itertools.pairwise(emitted):
         advance = later.device_position - earlier.device_position
         assert advance == earlier.frames, (
             "a posicao tem de avancar exatamente os quadros entregues"

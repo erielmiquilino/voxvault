@@ -12,7 +12,7 @@ half-works for notes, which is worse than one that plainly does not exist.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -48,7 +48,7 @@ def history(store: TranscriptStore, tmp_path: Path, engine: EngineInfo):
         tmp_path,
         uid="reuniao-1",
         title="Planejamento",
-        started_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
     )
     transcribe(
         store,
@@ -62,7 +62,7 @@ def history(store: TranscriptStore, tmp_path: Path, engine: EngineInfo):
         tmp_path,
         uid="reuniao-2",
         title="Retrospectiva",
-        started_at=datetime(2026, 2, 15, 9, 0, tzinfo=timezone.utc),
+        started_at=datetime(2026, 2, 15, 9, 0, tzinfo=UTC),
     )
     transcribe(
         store,
@@ -283,8 +283,8 @@ def test_the_date_filter_applies_to_notes_through_their_meeting(
     hits = history.search(
         "orcamento",
         scope="notas",
-        since=datetime(2026, 2, 1, tzinfo=timezone.utc),
-        until=datetime(2026, 2, 28, tzinfo=timezone.utc),
+        since=datetime(2026, 2, 1, tzinfo=UTC),
+        until=datetime(2026, 2, 28, tzinfo=UTC),
     )
     assert [h.meeting_uid for h in hits] == ["reuniao-2"]
 

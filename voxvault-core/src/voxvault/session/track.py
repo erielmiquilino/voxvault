@@ -117,7 +117,7 @@ class TrackWriter:
         if self._resampler is None:
             return b""
         try:
-            import numpy as np  # noqa: PLC0415
+            import numpy as np
 
             remaining = self._resampler.resample_chunk(
                 np.zeros(0, dtype=np.float32), last=True
@@ -128,7 +128,7 @@ class TrackWriter:
             self._resampler = None
         if remaining is None or len(remaining) == 0:
             return b""
-        import numpy as np  # noqa: PLC0415
+        import numpy as np
 
         return (np.clip(remaining, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
 
@@ -202,7 +202,7 @@ class TrackWriter:
         things this process touches, and a surface that never records should
         not pay for them.
         """
-        import numpy as np  # noqa: PLC0415
+        import numpy as np
 
         fmt = self.source_format
         if fmt.sample_format == "float32":
@@ -224,7 +224,7 @@ class TrackWriter:
             data = data.reshape(-1, fmt.channels).mean(axis=1)
 
         if fmt.sample_rate != TARGET_RATE:
-            import soxr  # noqa: PLC0415
+            import soxr
 
             if self._resampler is None:
                 # Stateful so that block boundaries do not click: a fresh
@@ -235,7 +235,7 @@ class TrackWriter:
                 )
             data = self._resampler.resample_chunk(data)
 
-        import numpy as np  # noqa: PLC0415
+        import numpy as np
 
         clipped = np.clip(data, -1.0, 1.0)
         if clipped.size:

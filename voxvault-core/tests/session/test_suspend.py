@@ -12,24 +12,24 @@ than asserting the constant.
 
 from __future__ import annotations
 
-import json
-import struct
-import time
 import wave
 from pathlib import Path
 
 import pytest
 
-from voxvault.capture.format import StreamFormat
-from voxvault.config import Config
-from voxvault.session import RecordingSession
-from voxvault.session.finalize import Step, finalize_session, pending_finalizations, read_metadata
-from voxvault.service.power import DURABLE_MINIMUM_MS, PowerWatcher
-from voxvault.types import CapturePacket
-
 # tests/session is not a package, so this resolves through the directory
 # pytest puts on sys.path for this file.
 from test_session import FakeStream, _wait_for
+
+from voxvault.config import Config
+from voxvault.service.power import DURABLE_MINIMUM_MS, PowerWatcher
+from voxvault.session import RecordingSession
+from voxvault.session.finalize import (
+    Step,
+    finalize_session,
+    pending_finalizations,
+    read_metadata,
+)
 
 
 @pytest.fixture

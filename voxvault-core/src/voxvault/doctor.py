@@ -10,11 +10,9 @@ meant to be read by a person: each failing item says what to do about it.
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from .config import Config, load_config, user_config_path
 from .types import DiagnosticItem
@@ -105,7 +103,7 @@ def _check_data_dir(config: Config) -> DiagnosticItem:
 
 
 def _check_decoder() -> DiagnosticItem:
-    from .engine.media import find_ffmpeg  # noqa: PLC0415
+    from .engine.media import find_ffmpeg
 
     exe = find_ffmpeg()
     if not exe:
@@ -123,7 +121,7 @@ def _check_decoder() -> DiagnosticItem:
 
 
 def _check_inference(config: Config) -> DiagnosticItem:
-    from .engine.capability import probe_inference  # noqa: PLC0415
+    from .engine.capability import probe_inference
 
     capability = probe_inference(config)
     detail = capability.detail
@@ -167,7 +165,7 @@ def _check_libraries() -> DiagnosticItem:
 def _check_capture() -> DiagnosticItem:
     """Enumerate real audio endpoints, when the capture backend is present."""
     try:
-        from .capture.devices import (  # noqa: PLC0415
+        from .capture.devices import (
             FLOW_CAPTURE,
             FLOW_RENDER,
             list_endpoints,
@@ -253,7 +251,7 @@ def _check_capture() -> DiagnosticItem:
 def _probe_open(endpoint) -> tuple[bool, str]:
     """Actually open an endpoint, briefly, to prove it can be opened."""
     try:
-        from .capture.stream import CaptureStream  # noqa: PLC0415
+        from .capture.stream import CaptureStream
 
         stream = CaptureStream(endpoint.id, loopback=False, name="diagnostico")
         try:

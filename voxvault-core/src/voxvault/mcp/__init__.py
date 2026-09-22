@@ -11,6 +11,6 @@ __all__ = ["build_server"]
 
 
 def build_server(config=None):
-    from .server import build_server as _build  # noqa: PLC0415
+    from .server import build_server as _build
 
     return _build(config)

@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from voxvault.mcp.cursors import CursorError, Tool, issue
+from voxvault.mcp.cursors import Tool, issue
 from voxvault.mcp.pagination import MAX_RESPONSE_CHARS
 from voxvault.types import Segment, Track
 
 from .conftest import ENGINE, call
-
 
 # -- the surface -------------------------------------------------------
 
@@ -130,7 +129,6 @@ def test_timeline_returns_speaker_and_instant(server, make_meeting) -> None:
 def test_meeting_never_transcribed_is_not_an_error(server, make_meeting) -> None:
     """Scenario: Reuniao sem transcricao alguma."""
     make_meeting("r1", segments=[])
-    from voxvault.types import AttemptState
 
     payload = call(server, "ler_transcricao", reuniao="r1")
 
@@ -249,7 +247,7 @@ def test_a_cursor_from_another_tool_is_refused(server, make_meeting) -> None:
         Tool.MEETINGS, (0, "x"), "estavel"
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match=r"cursor|emitido"):
         call(server, "ler_transcricao", reuniao="r1", cursor=foreign)
 
 

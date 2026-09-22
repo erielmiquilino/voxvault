@@ -268,7 +268,7 @@ class CaptureStream:
             packet = CapturePacket(
                 data=packet.data,
                 frames=packet.frames,
-                device_position=int(round(packet.device_position * self.position_scale)),
+                device_position=round(packet.device_position * self.position_scale),
                 qpc_ns=packet.qpc_ns,
                 discontinuity=packet.discontinuity,
                 silent=packet.silent,
@@ -339,7 +339,7 @@ class CaptureStream:
         # packets in hand; releasing them here is what keeps them.
         self._flush_calibration()
 
-    def __enter__(self) -> "CaptureStream":
+    def __enter__(self) -> CaptureStream:
         self.start()
         return self
 
@@ -665,7 +665,7 @@ def open_pair(
 
 __all__ = [
     "CaptureStream",
-    "StreamStats",
     "DeviceLostError",
+    "StreamStats",
     "open_pair",
 ]

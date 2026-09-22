@@ -20,7 +20,7 @@ from voxvault.config import Config
 from voxvault.errors import CaptureError
 from voxvault.session import RecordingSession
 from voxvault.session.finalize import Step, read_metadata
-from voxvault.types import CapturePacket, Track
+from voxvault.types import CapturePacket
 
 SOURCE_RATE = 48_000
 PACKET_FRAMES = 480  # 10 ms

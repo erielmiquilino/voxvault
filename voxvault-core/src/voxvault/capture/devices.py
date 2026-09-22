@@ -17,8 +17,9 @@ is not using.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Final, Iterable
+from typing import Final
 
 from ..config import DEVICE_ROLE_COMMUNICATIONS, DEVICE_ROLE_MULTIMEDIA
 from ..errors import CaptureError

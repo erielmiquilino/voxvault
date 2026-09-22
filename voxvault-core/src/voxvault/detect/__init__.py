@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 
 from .microphone import MicrophoneUser, active_users, store_is_readable

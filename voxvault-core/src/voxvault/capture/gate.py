@@ -91,7 +91,7 @@ class TonePlayer:
             self._thread.join(3.0)
             self._thread = None
 
-    def __enter__(self) -> "TonePlayer":
+    def __enter__(self) -> TonePlayer:
         self.start()
         return self
 
@@ -264,7 +264,7 @@ class CpuLoad:
                 pass
         self._procs.clear()
 
-    def __enter__(self) -> "CpuLoad":
+    def __enter__(self) -> CpuLoad:
         self.start()
         return self
 

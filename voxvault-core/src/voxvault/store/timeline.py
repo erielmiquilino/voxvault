@@ -12,6 +12,7 @@ from collections.abc import Iterable, Iterator
 
 from ..types import TimelineEntry
 
+
 #: Sort key of the timeline, stated once so that the Python side and the SQL
 #: side cannot drift apart. Ordering by start instant alone is not enough:
 #: both tracks can produce a segment beginning in the same millisecond, and an

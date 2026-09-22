@@ -18,9 +18,13 @@ from pathlib import Path
 import pytest
 
 from voxvault.config import Config
-from voxvault.service import ResidentService, ServiceBusy, _shutdown_if_idle
-from voxvault.service import exclusivity, rendezvous
-
+from voxvault.service import (
+    ResidentService,
+    ServiceBusy,
+    _shutdown_if_idle,
+    exclusivity,
+    rendezvous,
+)
 
 # -- rendezvous --------------------------------------------------------
 
@@ -247,7 +251,7 @@ def test_each_thread_gets_its_own_store_handle(service: ResidentService) -> None
             handle = service.store.handle
             seen.append(id(handle))
             list(handle.iter_meetings())
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             errors.append(exc)
 
     main_handle = id(service.store.handle)

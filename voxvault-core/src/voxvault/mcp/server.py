@@ -17,17 +17,16 @@ and an agent editing it would make it worthless as evidence.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from pydantic import Field
 
 from ..config import Config, load_config
-from .cursors import STABLE_BASE, CursorError, Tool, decode, issue
+from .cursors import STABLE_BASE, Tool, decode, issue
 from .pagination import (
     DEFAULT_PAGE_SIZE,
     MAX_RESPONSE_CHARS,
-    Page,
     build_page,
     clamp_page_size,
     paginate_text,
@@ -59,7 +58,7 @@ class _Session:
     @property
     def store(self):
         if self._handles is None:
-            from ..store import ThreadLocalStore  # noqa: PLC0415
+            from ..store import ThreadLocalStore
 
             self.config.data_dir.mkdir(parents=True, exist_ok=True)
             self._handles = ThreadLocalStore(self.config.db_path)
@@ -178,9 +177,9 @@ def _speaks_to_the_agent(function):
     """
     import functools
 
-    from mcp.server.mcpserver.exceptions import ToolError  # noqa: PLC0415
+    from mcp.server.mcpserver.exceptions import ToolError
 
-    from ..errors import VoxVaultError  # noqa: PLC0415
+    from ..errors import VoxVaultError
 
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
@@ -221,7 +220,7 @@ def _register(server) -> None:
         since = _parse_moment(desde)
         until = _parse_moment(ate)
         if ultimos_dias > 0:
-            since = datetime.now(timezone.utc) - timedelta(days=ultimos_dias)
+            since = datetime.now(UTC) - timedelta(days=ultimos_dias)
 
         def source():
             for meeting in SESSION.store.iter_meetings():
@@ -530,7 +529,7 @@ def _register_notes(server) -> None:
         tipo: Annotated[str, Field(description="Tipo da nota, ex. resumo")],
         conteudo: Annotated[str, Field(description="Texto da nota")],
     ) -> dict:
-        from ..store.notes import NoteAuthor  # noqa: PLC0415
+        from ..store.notes import NoteAuthor
 
         meeting = _meeting_or_fail(reuniao)
         note = _notes_api().create_note(
@@ -589,7 +588,7 @@ def _refresh_exports(meeting_uid: str) -> None:
     problem than losing the write.
     """
     try:
-        from ..store import regenerate_exports  # noqa: PLC0415
+        from ..store import regenerate_exports
 
         store = SESSION.store
         meeting = store.get_meeting(meeting_uid)
@@ -634,12 +633,12 @@ def _parse_moment(text: str) -> datetime | None:
             f"Data invalida: '{text}'. Use o formato ISO, por exemplo "
             f"2026-09-01 ou 2026-09-01T14:30:00."
         ) from None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 def build_server(config: Config | None = None):
     """Construct the server with every tool registered."""
-    from mcp.server.mcpserver import MCPServer  # noqa: PLC0415
+    from mcp.server.mcpserver import MCPServer
 
     if config is not None:
         SESSION.config = config

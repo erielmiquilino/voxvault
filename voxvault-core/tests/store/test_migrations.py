@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import make_meeting, read_json_line, result_of, spawn, wait_ready
+from conftest import result_of, spawn, wait_ready
 
 from voxvault.errors import SchemaTooNewError, StorageError
 from voxvault.store import SCHEMA_VERSION, TranscriptStore

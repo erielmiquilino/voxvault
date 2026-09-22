@@ -80,7 +80,7 @@ class WavFile:
         finally:
             self._file.close()
 
-    def __enter__(self) -> "WavFile":
+    def __enter__(self) -> WavFile:
         return self
 
     def __exit__(self, *exc: object) -> None:

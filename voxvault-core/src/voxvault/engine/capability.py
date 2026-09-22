@@ -120,14 +120,14 @@ def cuda_libraries_load() -> tuple[bool, str]:
     number while cuBLAS sits somewhere the Windows loader never looks, and the
     truth only surfaces after a multi-gigabyte model download.
     """
-    from .cuda_runtime import load_required_dlls  # noqa: PLC0415
+    from .cuda_runtime import load_required_dlls
 
     ok, reason = load_required_dlls()
     if not ok:
         return False, reason
 
     try:
-        import ctranslate2  # noqa: PLC0415  (deliberately lazy: ~0.3 s to import)
+        import ctranslate2
     except Exception as exc:  # pragma: no cover - environment dependent
         return False, f"nao foi possivel importar ctranslate2: {exc}"
     try:
