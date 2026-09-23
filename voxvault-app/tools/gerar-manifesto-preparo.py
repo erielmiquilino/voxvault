@@ -175,7 +175,10 @@ def gerar(saida: Path, uv: str) -> dict:
     bytes_gpu = _pesar(so_gpu, lock)
     manifesto = {
         "gerado_de": "voxvault-core/uv.lock",
-        "sha256_lock": hashlib.sha256(LOCK.read_bytes()).hexdigest(),
+        # Over the content, not the line endings: a Windows checkout turns the
+        # lock's LF into CRLF, and the same lock must not look like another one
+        # -- a stamp that disagrees prepares the environment again.
+        "sha256_lock": hashlib.sha256(LOCK.read_bytes().replace(b"\r\n", b"\n")).hexdigest(),
         "interpretador": INTERPRETADOR,
         "dependencias": {
             "pacotes": len(base),
