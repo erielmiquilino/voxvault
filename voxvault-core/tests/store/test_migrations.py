@@ -17,6 +17,7 @@ from conftest import result_of, spawn, wait_ready
 
 from voxvault.errors import SchemaTooNewError, StorageError
 from voxvault.store import SCHEMA_VERSION, TranscriptStore
+from voxvault.store.connection import _read_version_without_writing
 from voxvault.store.schema import MIGRATIONS
 
 
@@ -254,10 +255,12 @@ def test_waiting_for_another_process_migration_fails_after_the_deadline(
         holder.kill()
         holder.wait(timeout=30)
 
-    # The schema stayed where it was: nothing operated half-migrated.
-    conn = sqlite3.connect(db_path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
-    conn.close()
+    # The schema stayed where it was: nothing operated half-migrated. It is
+    # read the way the next process to start reads it: a bare connection
+    # opened this soon after the kill can still meet the dead holder's locks,
+    # which Windows releases asynchronously, and fail with a disk I/O error
+    # that the store's own reader recovers from.
+    assert _read_version_without_writing(db_path) == 1
 
 
 def test_default_migration_budget_is_thirty_seconds() -> None:
