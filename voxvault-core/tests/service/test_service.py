@@ -480,6 +480,95 @@ def test_recovery_finishes_a_deletion_whose_rows_are_gone(
     assert list(directory.parent.iterdir()) == []
 
 
+# -- recordings a dead process left open -------------------------------
+
+ENDED = "2026-09-23T04:10:15.761854+00:00"
+
+
+def _recording_left_open(
+    service: ResidentService, uid: str, *, seconds: float | None = 8.0
+) -> Path:
+    """A recording as the 01:10 one was found: its files finished and queued
+    on disk, its row still saying it records -- with a duration of zero."""
+    import wave
+    from datetime import UTC, datetime
+
+    from voxvault.layout import meeting_dir
+    from voxvault.session.finalize import Metadata, Step, write_metadata
+
+    directory = meeting_dir(service.config.data_dir, uid)
+    directory.mkdir(parents=True)
+    if seconds is not None:
+        with wave.open(str(directory / "mic.wav"), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(16_000)
+            out.writeframes(b"\x01\x00" * int(16_000 * seconds))
+    write_metadata(directory, Metadata(
+        uid=uid, ended_at=ENDED, duration_ms=0, step=Step.QUEUED.value,
+    ))
+    service.store.create_meeting(
+        uid=uid, title="Reuniao da madrugada", directory=directory,
+        started_at=datetime(2026, 9, 23, 4, 10, tzinfo=UTC),
+    )
+    return directory
+
+
+def test_recovery_closes_a_recording_its_session_left_open(
+    service: ResidentService,
+) -> None:
+    from datetime import datetime
+
+    from voxvault.store.deletion import deletion_blocker
+    from voxvault.types import MeetingState
+
+    _recording_left_open(service, "madrugada")
+    before = service.store.get_meeting("madrugada")
+    assert deletion_blocker(before.state, before.attempt_state), (
+        "o cenario precisa comecar recusando a exclusao"
+    )
+
+    summary = service.recover()
+
+    after = service.store.get_meeting("madrugada")
+    assert summary["gravacoes"] == 1
+    assert str(after.state) == MeetingState.RECORDED.value
+    # Stored in milliseconds.
+    assert abs((after.ended_at - datetime.fromisoformat(ENDED)).total_seconds()) < 0.001
+    assert abs(after.duration_ms - 8000) <= 50, "a duracao vem do audio em disco"
+    assert deletion_blocker(after.state, after.attempt_state) == ""
+
+
+def test_a_recording_that_left_no_audio_is_closed_as_failed(
+    service: ResidentService,
+) -> None:
+    from voxvault.types import MeetingState
+
+    _recording_left_open(service, "sem-audio", seconds=None)
+
+    service.recover()
+
+    assert str(service.store.get_meeting("sem-audio").state) == MeetingState.FAILED.value
+
+
+def test_recovery_leaves_the_live_recording_alone(service: ResidentService) -> None:
+    """Recovery also runs after a resume from sleep; a session alive by then
+    is recording for real, and its row is right."""
+    from types import SimpleNamespace
+
+    from voxvault.types import MeetingState
+
+    _recording_left_open(service, "ao-vivo")
+    service._session = SimpleNamespace(uid="ao-vivo")
+    try:
+        summary = service.recover()
+    finally:
+        service._session = None
+
+    assert summary["gravacoes"] == 0
+    assert str(service.store.get_meeting("ao-vivo").state) == MeetingState.RECORDING.value
+
+
 # -- one start at a time -----------------------------------------------
 
 def test_a_second_start_while_the_devices_open_is_refused(

@@ -115,18 +115,26 @@ export const recados = $state<{ itens: { id: number; tom: "info" | "erro" | "ok"
 });
 
 let proximoRecado = 1;
+const prazos = new Map<number, ReturnType<typeof setTimeout>>();
 
 export function recado(tom: "info" | "erro" | "ok", texto: string) {
-  const id = proximoRecado++;
-  recados.itens.push({ id, tom, texto });
+  // The same message again -- a button pressed over and over -- keeps the
+  // one already on screen up instead of stacking copies of it: eight of
+  // "cannot be deleted" once covered half the window.
+  const repetido = recados.itens.find((item) => item.tom === tom && item.texto === texto);
+  const id = repetido ? repetido.id : proximoRecado++;
+  if (!repetido) recados.itens.push({ id, tom, texto });
+  clearTimeout(prazos.get(id));
   // Long enough to read a sentence, short enough not to accumulate.
-  setTimeout(() => {
-    const posicao = recados.itens.findIndex((item) => item.id === id);
-    if (posicao >= 0) recados.itens.splice(posicao, 1);
-  }, tom === "erro" ? 9000 : 4500);
+  prazos.set(
+    id,
+    setTimeout(() => dispensarRecado(id), tom === "erro" ? 9000 : 4500),
+  );
 }
 
 export function dispensarRecado(id: number) {
+  clearTimeout(prazos.get(id));
+  prazos.delete(id);
   const posicao = recados.itens.findIndex((item) => item.id === id);
   if (posicao >= 0) recados.itens.splice(posicao, 1);
 }

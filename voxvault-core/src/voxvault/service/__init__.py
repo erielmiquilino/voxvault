@@ -257,7 +257,8 @@ class ResidentService:
         name, and nothing after this step should ever look inside one.
         """
         summary = {
-            "exclusoes": 0, "finalizacoes": 0, "tentativas": 0, "exportacoes": 0,
+            "exclusoes": 0, "finalizacoes": 0, "gravacoes": 0, "tentativas": 0,
+            "exportacoes": 0,
         }
 
         try:
@@ -292,6 +293,7 @@ class ResidentService:
                     "aviso", f"finalizacao: {exc}", uid=directory.name
                 )
 
+        summary["gravacoes"] = self._close_orphaned_recordings()
         summary["tentativas"] = self.pipeline.recover_pending()
 
         try:
@@ -302,6 +304,56 @@ class ResidentService:
             self._record_event("aviso", f"exportacoes: {exc}")
 
         return summary
+
+    def _close_orphaned_recordings(self) -> int:
+        """Close the rows of recordings whose session is gone.
+
+        A recording lives as long as its session, and a session lives only in
+        this process. A row still saying "gravando" after the process that
+        held it is over -- killed between finishing the files and writing the
+        row, a stop whose write failed, the machine suspended mid-meeting --
+        describes nothing that is recording, and a meeting "being recorded"
+        can be neither deleted nor trusted. Found on a real machine: a start
+        from 01:10, transcribed and all, still refused its own deletion hours
+        later. Its files say when it ended and how long it is.
+        """
+        from ..session.finalize import read_metadata
+        from ..types import MeetingState
+
+        with self._lock:
+            live = self._session.uid if self._session is not None else ""
+        open_states = (MeetingState.RECORDING.value, MeetingState.PAUSED.value)
+        closed = 0
+        for meeting in list(self.store.iter_meetings()):
+            if str(meeting.state) not in open_states or meeting.uid == live:
+                continue
+            directory = _existing_dir(meeting.directory)
+            metadata = read_metadata(directory) if directory is not None else None
+            tracks = _tracks_on_disk(directory)
+            duration = (
+                (metadata.duration_ms if metadata is not None else 0)
+                or _longest_ms(tracks)
+                or meeting.duration_ms
+            )
+            try:
+                self.store.finish_meeting(
+                    meeting.uid,
+                    ended_at=_ended_at(metadata, meeting.started_at, duration),
+                    duration_ms=duration,
+                    state=MeetingState.RECORDED if tracks else MeetingState.FAILED,
+                )
+            except Exception as exc:
+                self._record_event(
+                    "aviso", f"gravacao sem sessao: {exc}", uid=meeting.uid
+                )
+                continue
+            closed += 1
+            self._record_event(
+                "retomada",
+                "gravacao sem sessao encerrada pelo que os arquivos dizem",
+                uid=meeting.uid,
+            )
+        return closed
 
     def _enqueue_quietly(self, meeting_uid: str) -> None:
         try:
@@ -777,6 +829,39 @@ class ResidentService:
             "avisos": report.warnings,
             "diretorio": str(report.directory),
         }
+
+
+def _existing_dir(directory: str):
+    from pathlib import Path
+
+    path = Path(directory) if directory else None
+    return path if path is not None and path.is_dir() else None
+
+
+def _tracks_on_disk(directory) -> list:
+    if directory is None:
+        return []
+    from ..layout import available_tracks
+
+    return list(available_tracks(directory).values())
+
+
+def _longest_ms(tracks: list) -> int:
+    from ..engine.media import probe_duration_ms
+
+    return max((probe_duration_ms(path) or 0 for path in tracks), default=0)
+
+
+def _ended_at(metadata, started_at: datetime, duration_ms: int) -> datetime:
+    """When an orphaned recording ended: as its own metadata says, if it does."""
+    from datetime import timedelta
+
+    if metadata is not None and metadata.ended_at:
+        try:
+            return datetime.fromisoformat(metadata.ended_at)
+        except ValueError:
+            pass
+    return started_at + timedelta(milliseconds=duration_ms)
 
 
 # -- HTTP ---------------------------------------------------------------
