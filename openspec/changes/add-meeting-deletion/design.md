@@ -60,7 +60,7 @@ O resumo da recuperação ganha a contagem `exclusoes` (restauradas e concluída
 
 - aceita prefixo de `uid`, resolvido pelo mesmo `_resolve_uid` dos outros comandos; um prefixo ambíguo é recusado para aquele item;
 - sem `--yes`, imprime a prévia e a instrução de confirmação, sem alterar nada;
-- com `--json`, imprime um objeto `{"itens": [...], "total": {...}}`, em que cada item traz `uid`, `titulo`, `inicio`, `duracao_ms`, `revisoes`, `notas`, `arquivos` (`caminho`, `bytes`), `bytes` e, depois de executar, `resultado`: `"excluida"` ou `"recusada"`, com `motivo`;
+- com `--json`, imprime um objeto `{"itens": [...], "total": {...}}`, em que cada item traz `uid`, `titulo`, `inicio`, `duracao_ms`, `revisoes`, `notas`, `diretorio`, `arquivos` (`caminho`, `bytes`), `bytes`, `motivo` — a recusa em linguagem natural, vazia quando não há — e `causa`, a mesma recusa como uma palavra para programas (`gravando`, `transcrevendo`, `em_uso`, `inexistente`, `identificador` ou `falha`), e, depois de executar, `resultado`: `"excluida"` ou `"recusada"`; `total` soma `reunioes`, `duracao_ms`, `revisoes`, `notas` e `bytes` dos itens excluídos, ou que seriam excluídos;
 - processa cada `uid` de forma independente; o código de saída é `0` se todos foram excluídos, `2` se algum foi recusado e `1` para erro de uso.
 
 O aplicativo ganha `cli::delete(uids, confirmar)`, simétrico a `cli::remove_audio`, e dois comandos Tauri: `reunioes_excluir_previa(uids)` e `reunioes_excluir(uids)`. A tela da reunião usa os mesmos comandos com um único `uid`. Há um só caminho, para uma ou várias.

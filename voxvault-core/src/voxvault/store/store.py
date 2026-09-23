@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Any, Final
 
 from ..config import Config
-from ..errors import StorageError
+from ..errors import DeletionRefused, StorageError
 from ..types import (
+    AttemptState,
     EngineInfo,
     MeetingState,
     RevisionState,
@@ -33,6 +34,7 @@ from ..types import (
 )
 from . import connection as _conn
 from . import schema
+from .deletion import deletion_blocker
 from .models import (
     Meeting,
     Origin,
@@ -233,6 +235,46 @@ class TranscriptStore:
                 uid, attempt_state=str(attempt_state), attempt_error=error
             )
 
+    def claim_queued(self, uid: str) -> bool:
+        """Take a waiting meeting for transcription, if it is still waiting.
+
+        One conditional statement, so the check and the write happen at the
+        same instant under the database's write lock. A deletion that
+        committed first leaves no row to change; one that comes after finds
+        the attempt running and refuses. Nobody needs a lock of their own.
+        """
+        with self._write():
+            changed = self._conn.execute(
+                "UPDATE meetings SET attempt_state = ?, attempt_error = '',"
+                " updated_at_ms = ? WHERE uid = ? AND attempt_state = ?",
+                (
+                    AttemptState.RUNNING.value,
+                    now_ms(),
+                    uid,
+                    AttemptState.QUEUED.value,
+                ),
+            ).rowcount
+        return changed == 1
+
+    def meetings_with_attempt(self, *states: AttemptState | str) -> list[Meeting]:
+        """Meetings whose attempt is in one of ``states``, newest first.
+
+        Through the attempt index: the queue asks this every second, and a
+        scan of the whole history to find the one or two waiting meetings
+        would grow with every meeting ever recorded.
+        """
+        if not states:
+            return []
+        marks = ", ".join("?" for _ in states)
+        return [
+            _meeting(r)
+            for r in self._conn.execute(
+                f"SELECT * FROM meetings WHERE attempt_state IN ({marks})"
+                " ORDER BY started_at_ms DESC, id DESC",
+                [str(s) for s in states],
+            )
+        ]
+
     def _update_meeting(self, uid: str, **values: Any) -> None:
         values["updated_at_ms"] = now_ms()
         assignments = ", ".join(f"{name} = ?" for name in values)
@@ -242,6 +284,61 @@ class TranscriptStore:
         )
         if cursor.rowcount == 0:
             raise StorageError(f"Reuniao '{uid}' nao encontrada no armazenamento.")
+
+    # -- deletion --------------------------------------------------------
+
+    def meeting_footprint(self, uid: str) -> tuple[int, int]:
+        """How many revisions and notes a meeting holds, for a preview."""
+        meeting = self._require_meeting(uid)
+        row = self._conn.execute(
+            "SELECT (SELECT COUNT(*) FROM revisions WHERE meeting_id = ?),"
+            "       (SELECT COUNT(*) FROM notes WHERE meeting_id = ?)",
+            (meeting.id, meeting.id),
+        ).fetchone()
+        return int(row[0]), int(row[1])
+
+    def purge_meeting(self, uid: str) -> None:
+        """Remove every row of a meeting, or refuse having removed none.
+
+        The files are not this method's business: :mod:`.deletion` moves them
+        aside before calling it and removes them afterwards. What happens here
+        is the one step that must be indivisible for anyone reading the store.
+
+        The recording and attempt checks are repeated inside the write lock,
+        where the answer can no longer change before the rows are gone. The
+        queue's claim is a write too, so it is either already visible here or
+        waits for this transaction and then finds nothing left to claim.
+        """
+        with self._write():
+            row = self._conn.execute(
+                "SELECT id, state, attempt_state FROM meetings WHERE uid = ?",
+                (uid,),
+            ).fetchone()
+            if row is None:
+                raise DeletionRefused(
+                    f"a reuniao '{uid}' nao existe mais no armazenamento.",
+                    gone=True,
+                )
+            reason = deletion_blocker(row["state"], row["attempt_state"])
+            if reason:
+                raise DeletionRefused(reason)
+            # The search index has no foreign key, so it is emptied by hand,
+            # through the rowids of the meeting's own segments -- an index
+            # lookup, never a scan of the whole index.
+            self._conn.execute(
+                "DELETE FROM segments_fts WHERE rowid IN"
+                " (SELECT id FROM segments WHERE meeting_id = ?)",
+                (row["id"],),
+            )
+            self._fault("purge_after_index")
+            # Explicitly, so the note index trigger fires for every note
+            # without depending on SQLite running triggers for rows a cascade
+            # removes.
+            self._conn.execute("DELETE FROM notes WHERE meeting_id = ?", (row["id"],))
+            self._fault("purge_after_notes")
+            # Revisions and segments follow through their cascades.
+            self._conn.execute("DELETE FROM meetings WHERE id = ?", (row["id"],))
+            self._fault("purge_after_meeting")
 
     # -- revisions -------------------------------------------------------
 

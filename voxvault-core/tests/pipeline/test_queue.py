@@ -8,6 +8,7 @@ leave nothing half-written behind.
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -48,6 +49,8 @@ def _drain(pipeline, store, meeting_uid: str) -> None:
     a test that changes the engine's behaviour would be testing nothing.
     """
     pipeline._release_worker()
+    # The loop only ever processes a meeting it can claim from the queue.
+    store.set_attempt_state(meeting_uid, AttemptState.QUEUED)
     meeting = store.get_meeting(meeting_uid)
     pipeline._process(meeting)
 
@@ -344,3 +347,150 @@ def test_queue_runs_once_the_recording_ends(pipeline, store, make_meeting) -> No
 
     assert store.active_revision(meeting.uid) is not None
     assert str(store.get_meeting(meeting.uid).attempt_state) == AttemptState.NONE
+
+
+# -- the claim ---------------------------------------------------------
+
+def test_a_meeting_gone_before_the_claim_is_skipped_for_the_next(
+    pipeline, store, make_meeting
+) -> None:
+    """Deleted between being chosen and being claimed: the queue moves on.
+
+    The choice and the claim are two moments. Whatever removes the meeting in
+    between -- a deletion, in practice -- must leave the loop alive and
+    working on the next meeting, with nothing recorded against the one that
+    is gone.
+    """
+    make_meeting("reuniao-1")
+    make_meeting("reuniao-2")
+    pipeline.enqueue("reuniao-1")
+    pipeline.enqueue("reuniao-2")
+    events: list[tuple[str, str]] = []
+    pipeline._on_event = lambda kind, detail: events.append((kind, detail))
+
+    choose = pipeline._next_queued
+    vanished: list[str] = []
+
+    def choose_then_vanish(db):
+        meeting = choose(db)
+        if meeting is not None and not vanished:
+            vanished.append(meeting.uid)
+            db._conn.execute("DELETE FROM meetings WHERE uid = ?", (meeting.uid,))
+            shutil.rmtree(meeting.directory)
+        return meeting
+
+    pipeline._next_queued = choose_then_vanish
+    pipeline.start()
+    try:
+        deadline = time.monotonic() + 10
+        remaining = None
+        while time.monotonic() < deadline:
+            if vanished:
+                remaining = next(u for u in ("reuniao-1", "reuniao-2") if u != vanished[0])
+                if store.active_revision(remaining) is not None:
+                    break
+            time.sleep(0.05)
+        assert pipeline._thread is not None and pipeline._thread.is_alive()
+    finally:
+        pipeline.stop()
+
+    assert remaining is not None
+    assert store.get_meeting(vanished[0]) is None
+    assert store.active_revision(remaining) is not None
+    assert str(store.get_meeting(remaining).attempt_state) == AttemptState.NONE
+    assert not [e for e in events if e[0] == "falhou"], events
+    assert all(detail != vanished[0] for _, detail in events), events
+
+
+def test_the_claim_takes_only_a_waiting_meeting(store, make_meeting) -> None:
+    meeting = make_meeting()
+    assert store.claim_queued(meeting.uid) is False, "nao estava na fila"
+
+    store.set_attempt_state(meeting.uid, AttemptState.QUEUED)
+    assert store.claim_queued(meeting.uid) is True
+    assert str(store.get_meeting(meeting.uid).attempt_state) == AttemptState.RUNNING
+    assert store.claim_queued(meeting.uid) is False, "ja foi reivindicada"
+    assert store.claim_queued("nao-existe") is False
+
+
+def test_a_queued_meeting_that_is_deleted_is_never_transcribed(
+    pipeline, store, make_meeting
+) -> None:
+    """Scenario: Reuniao aguardando na fila -- with the real queue loop."""
+    from voxvault.store.deletion import delete_meeting
+
+    doomed = make_meeting("reuniao-excluida")
+    kept = make_meeting("reuniao-mantida")
+    pipeline.enqueue(doomed.uid)
+
+    outcome = delete_meeting(store, doomed.uid)
+    assert outcome.deleted, outcome.reason
+    pipeline.enqueue(kept.uid)
+
+    pipeline.start()
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if store.active_revision(kept.uid) is not None:
+                break
+            time.sleep(0.05)
+    finally:
+        pipeline.stop()
+
+    assert store.active_revision(kept.uid) is not None
+    assert store.get_meeting(doomed.uid) is None
+    transcribed = [str(path) for worker in pipeline.workers for path in worker.paths]
+    assert len(transcribed) == 2, "so as duas trilhas da reuniao mantida"
+    assert all("reuniao-mantida" in path for path in transcribed), transcribed
+
+
+def test_a_meeting_deleted_right_after_its_publication_does_not_stop_the_queue(
+    pipeline, store, make_meeting, monkeypatch
+) -> None:
+    """Publication clears the attempt, so a deletion may land before the loop
+    has finished wrapping the meeting up. The loop must survive it."""
+    from voxvault.store import TranscriptStore
+    from voxvault.store.deletion import delete_meeting
+
+    make_meeting("reuniao-1")
+    make_meeting("reuniao-2")
+    pipeline.enqueue("reuniao-1")
+    pipeline.enqueue("reuniao-2")
+    events: list[tuple[str, str]] = []
+    pipeline._on_event = lambda kind, detail: events.append((kind, detail))
+
+    publish = TranscriptStore.publish_revision
+    deleted: list[str] = []
+
+    def publish_then_delete(self, revision_id, **kwargs):
+        outcome = publish(self, revision_id, **kwargs)
+        if not deleted:
+            uid = self._conn.execute(
+                "SELECT m.uid FROM revisions r JOIN meetings m ON m.id = r.meeting_id"
+                " WHERE r.id = ?",
+                (revision_id,),
+            ).fetchone()[0]
+            result = delete_meeting(self, uid)
+            assert result.deleted, result.reason
+            deleted.append(uid)
+        return outcome
+
+    monkeypatch.setattr(TranscriptStore, "publish_revision", publish_then_delete)
+    pipeline.start()
+    try:
+        deadline = time.monotonic() + 10
+        survivor = None
+        while time.monotonic() < deadline:
+            if deleted:
+                survivor = next(u for u in ("reuniao-1", "reuniao-2") if u != deleted[0])
+                if store.active_revision(survivor) is not None:
+                    break
+            time.sleep(0.05)
+        assert pipeline._thread is not None and pipeline._thread.is_alive()
+    finally:
+        pipeline.stop()
+
+    assert survivor is not None and store.active_revision(survivor) is not None
+    assert store.get_meeting(deleted[0]) is None
+    assert not Path(store.get_meeting(survivor).directory).with_name(deleted[0]).exists()
+    assert not [e for e in events if e[0] == "falhou"], events

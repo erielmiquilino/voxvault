@@ -6,9 +6,12 @@
   // distinction between "this was said" and "this was interpreted" has to
   // survive a hurried reading months later.
   import { convertFileSrc } from "@tauri-apps/api/core";
+  import { tick } from "svelte";
 
   import {
     comoFalha,
+    reunioesExcluir,
+    reunioesExcluirPrevia,
     reuniaoAbrirPasta,
     reuniaoDetalhar,
     reuniaoExportar,
@@ -25,7 +28,9 @@
     type TipoDeNota,
   } from "../lib/api";
   import { recado, shell } from "../lib/estado.svelte";
+  import { corpoDeUma, motivoLegivel, motivoParaNaoExcluir } from "../lib/exclusao";
   import {
+    bytes,
     carimbo,
     dataHora,
     duracao,
@@ -45,10 +50,13 @@
     resumo,
     focoMs = null,
     onMudou,
+    onExcluida,
   }: {
     resumo: Resumo;
     focoMs?: number | null;
     onMudou: () => void | Promise<void>;
+    /** The meeting is gone: the caller leaves it and refreshes the list. */
+    onExcluida: (uid: string) => void | Promise<void>;
   } = $props();
 
   const uid = $derived(resumo.uid);
@@ -82,6 +90,12 @@
   }>(null);
   let renomeando = $state(false);
   let novoTitulo = $state("");
+  let excluindo = $state(false);
+  /** True while a deletion runs: the audio elements are taken out of the page
+   *  so the webview lets go of the files they hold open. */
+  let reprodutorLiberado = $state(false);
+
+  const motivoSemExclusao = $derived(motivoParaNaoExcluir(resumo));
 
   // A recording in progress is captured from the output device, so playing an
   // old meeting now would be folded into it as if it were a participant. The
@@ -250,6 +264,81 @@
     }
   }
 
+  /// Deleting starts from the core's own preview: the confirmation lists what
+  /// the core is about to remove and the space it will free, and the button
+  /// names the action. The focus starts on "Cancelar".
+  async function pedirExclusao() {
+    let previa;
+    try {
+      previa = await reunioesExcluirPrevia([uid]);
+    } catch (erro) {
+      recado("erro", comoFalha(erro).mensagem);
+      return;
+    }
+    const item = previa.itens[0];
+    if (!item || item.motivo) {
+      recado(
+        "erro",
+        item ? `A reunião não pode ser excluída agora: ${motivoLegivel(item)}.` : "O núcleo não descreveu a reunião.",
+      );
+      return;
+    }
+    confirmacao = {
+      titulo: "Excluir esta reunião definitivamente?",
+      corpo: corpoDeUma(previa),
+      rotulo: "Excluir definitivamente",
+      ao: () => void excluir(),
+    };
+  }
+
+  /// The player is stopped and taken out of the page before the call, because
+  /// the webview keeps the FLAC open while an audio element exists -- and an
+  /// open file is exactly what makes the core refuse. If the file is still held
+  /// for a moment after that, one more attempt follows half a second later.
+  async function excluir() {
+    excluindo = true;
+    await liberarReprodutor();
+    try {
+      let resultado = await reunioesExcluir([uid]);
+      if (resultado.itens[0]?.causa === "em_uso") {
+        await new Promise((pronto) => setTimeout(pronto, 500));
+        resultado = await reunioesExcluir([uid]);
+      }
+      const item = resultado.itens[0];
+      if (item?.resultado === "excluida") {
+        confirmacao = null;
+        recado("ok", `Reunião excluída. ${bytes(resultado.total.bytes)} liberados.`);
+        await onExcluida(uid);
+        return;
+      }
+      confirmacao = null;
+      reprodutorLiberado = false;
+      recado(
+        "erro",
+        item ? `A reunião não foi excluída: ${motivoLegivel(item)}.` : "O núcleo não respondeu sobre a exclusão.",
+      );
+    } catch (erro) {
+      confirmacao = null;
+      reprodutorLiberado = false;
+      recado("erro", comoFalha(erro).mensagem);
+    } finally {
+      excluindo = false;
+    }
+  }
+
+  async function liberarReprodutor() {
+    for (const elemento of Object.values(elementos)) {
+      if (!elemento) continue;
+      elemento.pause();
+      elemento.removeAttribute("src");
+      // Without a source, load() makes the element drop the resource it held.
+      elemento.load();
+    }
+    tocando = false;
+    reprodutorLiberado = true;
+    await tick();
+  }
+
   /// The confirmation quotes the core's own dry run, so what the user reads is
   /// exactly what the core is about to do -- including its refusal to remove
   /// audio from a meeting that has no transcript, where removing it would erase
@@ -356,7 +445,19 @@
       <button class="botao discreto" disabled={!r.tem_audio} onclick={pedirRemocaoDeAudio}>
         Remover o áudio
       </button>
+      <button
+        class="botao discreto perigo"
+        disabled={!!motivoSemExclusao || excluindo}
+        title={motivoSemExclusao ??
+          "Apaga a reunião inteira: áudio, transcrições, notas e exportações."}
+        onclick={pedirExclusao}
+      >
+        Excluir reunião
+      </button>
     </div>
+    {#if motivoSemExclusao}
+      <p class="legenda" style="margin:6px 0 0">{motivoSemExclusao}</p>
+    {/if}
   </header>
 
   {#if r.avisos.length > 0}
@@ -413,16 +514,18 @@
         aria-label="Posição da reprodução"
       />
 
-      {#each trilhasDisponiveis as t (t.caminho)}
-        <audio
-          bind:this={elementos[t.nome]}
-          src={convertFileSrc(t.caminho)}
-          preload="metadata"
-          muted={!trilhasParaTocar.some((p) => p.nome === t.nome)}
-          ontimeupdate={t.nome === trilhasParaTocar[0]?.nome ? aoAvancar : undefined}
-          onended={() => (tocando = false)}
-        ></audio>
-      {/each}
+      {#if !reprodutorLiberado}
+        {#each trilhasDisponiveis as t (t.caminho)}
+          <audio
+            bind:this={elementos[t.nome]}
+            src={convertFileSrc(t.caminho)}
+            preload="metadata"
+            muted={!trilhasParaTocar.some((p) => p.nome === t.nome)}
+            ontimeupdate={t.nome === trilhasParaTocar[0]?.nome ? aoAvancar : undefined}
+            onended={() => (tocando = false)}
+          ></audio>
+        {/each}
+      {/if}
     {/if}
   </div>
 
@@ -570,8 +673,9 @@
   <Confirmacao
     titulo={confirmacao.titulo}
     corpo={confirmacao.corpo}
-    confirmar={confirmacao.rotulo}
+    confirmar={excluindo ? "Excluindo..." : confirmacao.rotulo}
     perigo
+    ocupado={excluindo}
     onConfirmar={confirmacao.ao}
     onCancelar={() => (confirmacao = null)}
   />

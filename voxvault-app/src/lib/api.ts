@@ -233,6 +233,37 @@ export const reuniaoRemoverAudioPrevia = (uid: string) =>
   invoke<string>("reuniao_remover_audio_previa", { uid });
 export const reuniaoRemoverAudio = (uid: string) =>
   invoke<string>("reuniao_remover_audio", { uid });
+/** One meeting of a deletion report, exactly as `voxvault delete --json`
+ *  prints it. `motivo` is for a person, `causa` is the same refusal as a word
+ *  to branch on; both are empty when nothing refuses. `resultado` only exists
+ *  once the deletion was confirmed. */
+export interface ItemDaExclusao {
+  uid: string;
+  titulo: string;
+  inicio: string | null;
+  duracao_ms: number;
+  revisoes: number;
+  notas: number;
+  diretorio: string;
+  arquivos: { caminho: string; bytes: number }[];
+  bytes: number;
+  motivo: string;
+  causa: "" | "gravando" | "transcrevendo" | "em_uso" | "inexistente" | "identificador" | "falha";
+  resultado?: "excluida" | "recusada";
+}
+
+export interface Exclusao {
+  itens: ItemDaExclusao[];
+  /** Sums over the meetings that are, or would be, deleted. */
+  total: { reunioes: number; duracao_ms: number; revisoes: number; notas: number; bytes: number };
+}
+
+/** Dry run: what deleting these meetings would remove. Changes nothing. */
+export const reunioesExcluirPrevia = (uids: string[]) =>
+  invoke<Exclusao>("reunioes_excluir_previa", { uids });
+/** Deletes for good; each meeting is deleted or refused on its own. */
+export const reunioesExcluir = (uids: string[]) =>
+  invoke<Exclusao>("reunioes_excluir", { uids });
 export const reuniaoAbrirPasta = (diretorio: string) =>
   invoke<void>("reuniao_abrir_pasta", { diretorio });
 export const abrirCaminho = (caminho: string) => invoke<void>("abrir_caminho", { caminho });

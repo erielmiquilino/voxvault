@@ -77,6 +77,8 @@ pub fn run() {
             commands::reuniao_renomear,
             commands::reuniao_remover_audio_previa,
             commands::reuniao_remover_audio,
+            commands::reunioes_excluir_previa,
+            commands::reunioes_excluir,
             commands::reuniao_abrir_pasta,
             commands::abrir_caminho,
             commands::busca,

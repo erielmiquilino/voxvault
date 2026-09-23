@@ -37,6 +37,19 @@ class StorageBusyError(StorageError):
     """A write could not acquire the database within the allowed wait."""
 
 
+class DeletionRefused(StorageError):
+    """A meeting was not deleted, and nothing of it was removed.
+
+    ``gone`` is true when the refusal is that the meeting no longer exists,
+    which is the one refusal whose files are nobody's any more.
+    """
+
+    def __init__(self, reason: str, *, gone: bool = False) -> None:
+        self.reason = reason
+        self.gone = gone
+        super().__init__(reason)
+
+
 class SchemaTooNewError(StorageError):
     """The database was written by a newer version than this build knows."""
 

@@ -75,6 +75,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     remove_audio.set_defaults(handler=_cmd_remove_audio)
 
+    delete = sub.add_parser(
+        "delete",
+        help="Exclui reunioes de vez: audio, transcricoes, notas e exportacoes.",
+    )
+    delete.add_argument(
+        "uid", nargs="+",
+        help="Identificador de cada reuniao, ou um prefixo unico.",
+    )
+    delete.add_argument(
+        "--yes", action="store_true",
+        help="Confirma a exclusao, que nao pode ser desfeita.",
+    )
+    delete.add_argument("--json", action="store_true")
+    delete.set_defaults(handler=_cmd_delete)
+    # Exit status 2 means "some meeting was refused" for this command, so a
+    # usage error cannot keep argparse's 2 without the two becoming one.
+    _usage_errors_exit_one(delete)
+
     show = sub.add_parser("show", help="Mostra a transcricao de uma reuniao.")
     show.add_argument("uid")
     show.add_argument("--json", action="store_true")
@@ -216,6 +234,14 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_cmd.set_defaults(handler=_cmd_mcp)
 
     return parser
+
+
+def _usage_errors_exit_one(parser: argparse.ArgumentParser) -> None:
+    def error(message: str):
+        parser.print_usage(sys.stderr)
+        parser.exit(1, f"{parser.prog}: erro: {message}\n")
+
+    parser.error = error  # type: ignore[method-assign]
 
 
 def _load(args: argparse.Namespace):
@@ -529,14 +555,201 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _resolve_uid(store, prefix: str) -> str:
     """Accept a unique prefix, the way git accepts a short hash."""
+    uid, reason = _match_uid(store, prefix)
+    if uid is None:
+        raise SystemExit(reason)
+    return uid
+
+
+def _match_uid(store, prefix: str) -> tuple[str | None, str]:
+    """The meeting a prefix names, or why it names none -- without exiting."""
     matches = [m.uid for m in store.iter_meetings() if m.uid.startswith(prefix)]
     if not matches:
-        raise SystemExit(f"Nenhuma reuniao comeca com '{prefix}'.")
+        return None, f"Nenhuma reuniao comeca com '{prefix}'."
     if len(matches) > 1:
-        raise SystemExit(
-            f"'{prefix}' e ambiguo: {len(matches)} reunioes comecam assim."
+        return None, f"'{prefix}' e ambiguo: {len(matches)} reunioes comecam assim."
+    return matches[0], ""
+
+
+def _cmd_delete(args: argparse.Namespace) -> int:
+    """Delete meetings for good, or show exactly what that would take.
+
+    Without ``--yes`` nothing is touched: the preview is printed with the way
+    to confirm. Each identifier is resolved and deleted on its own, so an
+    ambiguous prefix or a meeting being transcribed refuses that one item and
+    nothing else.
+
+    ``--json`` prints ``{"itens": [...], "total": {...}}``. Every item carries
+    ``uid``, ``titulo``, ``inicio``, ``duracao_ms``, ``revisoes``, ``notas``,
+    ``diretorio``, ``arquivos`` (``caminho``, ``bytes``), ``bytes`` and
+    ``motivo`` -- why it is, or would be, refused; empty when it is not --
+    with ``causa``, the same refusal as one word for a program (``gravando``,
+    ``transcrevendo``, ``em_uso``, ``inexistente``, ``identificador`` or
+    ``falha``), and, once confirmed, ``resultado``: ``"excluida"`` or
+    ``"recusada"``.
+    ``total`` adds up the items that are, or would be, deleted.
+
+    Exit status: 0 when every meeting was deleted (or would be), 2 when any
+    was refused, 1 for a usage error.
+    """
+    import json
+
+    from ..errors import DeletionRefused
+    from ..store.deletion import cause_of, delete_meeting, preview_deletion
+
+    config = _load(args)
+    store = _open_store(config)
+    try:
+        items: list[dict] = []
+        seen: set[str] = set()
+        for given in args.uid:
+            uid, reason = _match_uid(store, given)
+            if uid is None:
+                items.append(_deletion_item(
+                    None, given, reason, "identificador", args.yes,
+                ))
+                continue
+            if uid in seen:
+                continue
+            seen.add(uid)
+            if args.yes:
+                outcome = delete_meeting(store, uid)
+                items.append(_deletion_item(
+                    outcome.preview, uid, outcome.reason, outcome.cause, True,
+                    outcome.deleted,
+                ))
+                continue
+            try:
+                preview = preview_deletion(store, uid)
+            except DeletionRefused as exc:
+                items.append(_deletion_item(
+                    None, uid, exc.reason, cause_of(exc.reason, gone=exc.gone), False,
+                ))
+                continue
+            items.append(_deletion_item(
+                preview, uid, preview.blocker, preview.cause, False,
+            ))
+    finally:
+        store.close()
+
+    counted = [item for item in items if not item["motivo"]]
+    total = {
+        "reunioes": len(counted),
+        "duracao_ms": sum(item["duracao_ms"] for item in counted),
+        "revisoes": sum(item["revisoes"] for item in counted),
+        "notas": sum(item["notas"] for item in counted),
+        "bytes": sum(item["bytes"] for item in counted),
+    }
+    status = 0 if len(counted) == len(items) else 2
+
+    if args.json:
+        sys.stdout.write(json.dumps(
+            {"itens": items, "total": total}, ensure_ascii=False, indent=2,
+        ))
+        sys.stdout.write("\n")
+        return status
+
+    sys.stdout.write(_describe_deletion(items, total, confirmed=args.yes))
+    return status
+
+
+def _deletion_item(
+    preview, uid: str, reason: str, cause: str, confirmed: bool,
+    deleted: bool = False,
+) -> dict:
+    from ..store import from_ms
+
+    item: dict = {
+        "uid": uid,
+        "titulo": "",
+        "inicio": None,
+        "duracao_ms": 0,
+        "revisoes": 0,
+        "notas": 0,
+        "diretorio": "",
+        "arquivos": [],
+        "bytes": 0,
+        "motivo": reason,
+        "causa": cause,
+    }
+    if preview is not None:
+        item.update({
+            "uid": preview.uid,
+            "titulo": preview.title,
+            "inicio": from_ms(preview.started_at_ms).isoformat(),
+            "duracao_ms": preview.duration_ms,
+            "revisoes": preview.revisions,
+            "notas": preview.notes,
+            "diretorio": preview.directory,
+            "arquivos": [{"caminho": f.path, "bytes": f.size} for f in preview.files],
+            "bytes": preview.size,
+        })
+    if confirmed:
+        item["resultado"] = "excluida" if deleted else "recusada"
+    return item
+
+
+def _describe_deletion(items: list[dict], total: dict, *, confirmed: bool) -> str:
+    from datetime import datetime
+
+    from ..store import format_duration
+
+    def moment(item: dict) -> str:
+        if not item["inicio"]:
+            return ""
+        return f"{datetime.fromisoformat(item['inicio']).astimezone():%d/%m/%Y %H:%M}"
+
+    lines: list[str] = []
+    if confirmed:
+        for item in items:
+            label = item["titulo"] or item["uid"]
+            if item["resultado"] == "excluida":
+                lines.append(f"  excluida  {item['uid'][:8]}  {label}")
+            else:
+                lines.append(
+                    f"  recusada  {item['uid'][:8]}  {label}: {item['motivo']}"
+                )
+        refused = len(items) - total["reunioes"]
+        lines.append(
+            f"{total['reunioes']} reuniao(oes) excluida(s)"
+            + (f", {refused} recusada(s)" if refused else "")
+            + f". {_megabytes(total['bytes'])} liberados."
         )
-    return matches[0]
+        return "\n".join(lines) + "\n"
+
+    lines.append("Exclusao definitiva -- nada foi removido ainda.")
+    lines.append("")
+    for item in items:
+        if not item["titulo"] and not item["inicio"]:
+            lines.append(f"  {item['uid']}  nao sera excluida: {item['motivo']}")
+            continue
+        lines.append(
+            f"  {item['uid'][:8]}  {moment(item)}  "
+            f"{format_duration(item['duracao_ms'])}  {item['titulo']}"
+        )
+        lines.append(
+            f"            {item['revisoes']} revisao(oes), {item['notas']} nota(s), "
+            f"{len(item['arquivos'])} arquivo(s), {_megabytes(item['bytes'])}"
+        )
+        lines.append(f"            pasta: {item['diretorio']}")
+        if item["motivo"]:
+            lines.append(f"            nao sera excluida: {item['motivo']}")
+    lines.append("")
+    lines.append(
+        f"Total: {total['reunioes']} reuniao(oes), "
+        f"{format_duration(total['duracao_ms'])}, {total['notas']} nota(s), "
+        f"{_megabytes(total['bytes'])} a liberar."
+    )
+    lines.append(
+        "Sao apagados o audio, as transcricoes, as notas e as exportacoes. "
+        "A exclusao nao pode ser desfeita."
+    )
+    lines.append("Confirme repetindo o comando com --yes.")
+    return "\n".join(lines) + "\n"
+
+
+def _megabytes(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def _cmd_show(args: argparse.Namespace) -> int:

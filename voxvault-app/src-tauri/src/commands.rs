@@ -328,6 +328,34 @@ pub fn reuniao_remover_audio(uid: String) -> Resposta<String> {
     cli::remove_audio(&uid, true).map_err(Falha::from)
 }
 
+/// What deleting these meetings would remove, without removing anything.
+///
+/// The sums in the answer are the core's, and they are what the confirmation
+/// shows: the space the person agrees to free is the space the core frees.
+#[tauri::command]
+pub async fn reunioes_excluir_previa(uids: Vec<String>) -> Resposta<cli::Exclusao> {
+    excluir(uids, false).await
+}
+
+/// Delete meetings for good. Each one is deleted or refused on its own, and
+/// the answer says which, with the reason for every refusal.
+#[tauri::command]
+pub async fn reunioes_excluir(uids: Vec<String>) -> Resposta<cli::Exclusao> {
+    excluir(uids, true).await
+}
+
+/// Off the main thread: a batch takes one interpreter start plus a rename and
+/// a transaction per meeting, and the window must not freeze meanwhile.
+async fn excluir(uids: Vec<String>, confirmar: bool) -> Resposta<cli::Exclusao> {
+    if uids.is_empty() {
+        return Err(Falha::nova("Nenhuma reunião foi indicada para exclusão."));
+    }
+    tauri::async_runtime::spawn_blocking(move || cli::delete(&uids, confirmar))
+        .await
+        .map_err(|err| Falha::nova(format!("A exclusão foi interrompida: {err}")))?
+        .map_err(Falha::from)
+}
+
 #[tauri::command]
 pub fn reuniao_abrir_pasta(diretorio: String) -> Resposta<()> {
     system::reveal(Path::new(&diretorio)).map_err(Falha::nova)

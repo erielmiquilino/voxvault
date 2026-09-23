@@ -11,7 +11,7 @@ nas duas colunas. Onde não está, o motivo está dito.
 
 | | |
 |---|---|
-| Testes | 456 em Python e 5 em Rust, todos passando, inclusive os de hardware |
+| Testes | 488 em Python e 7 em Rust, todos passando, inclusive os de hardware |
 | Lint | `ruff` limpo em `src` e `tests` |
 | Código | 21.281 linhas de fonte entre núcleo e aplicativo, 8.331 de teste |
 | Subida da linha de comando | 213 ms |
@@ -151,6 +151,71 @@ qualquer um deles.
 A regra que separa útil de irritante: não basta um aplicativo de reunião estar
 em execução e algo estar capturando — o processo que detém o microfone tem de
 ser o próprio aplicativo reconhecido.
+
+## Exclusão de reuniões
+
+**Completa.** Uma reunião sai de vez — áudio, revisões, segmentos, notas,
+exportações, as entradas dos dois índices de busca e a pasta — pela tela da
+reunião, em lote pela Biblioteca, ou por `voxvault delete <uid>... [--yes]
+[--json]`. O servidor MCP não ganhou ferramenta nenhuma, e o teste da fronteira
+agora falha diante de qualquer nome com `excluir`, `delete`, `apagar` ou
+`remover_reuniao`, o que um teste negativo confirma registrando uma de propósito.
+
+A ordem é o desenho inteiro: a pasta é renomeada para `.excluindo-<uid>` antes
+de o banco ser tocado, porque a única falha que uma exclusão encontra na prática
+— um arquivo aberto por outro programa — faz a renomeação falhar, e ali ainda
+não mudou nada. Depois vem uma transação `BEGIN IMMEDIATE` que confere de novo
+gravação e transcrição, e só então a lápide é apagada. Um processo morto no meio
+deixa uma reunião inteira ou nenhuma: a inicialização seguinte do serviço
+restaura a lápide se a reunião ainda consta, e a apaga se não consta.
+
+A corrida com a fila é decidida pelo SQLite, sem trava própria: a fila agora
+reivindica a reunião com um `UPDATE … WHERE attempt_state = 'na_fila'` e só
+segue se uma linha mudou. Quem chega primeiro ao bloqueio de escrita vence.
+
+### Verificado executando
+
+- **Com o áudio tocando.** Pela janela real, dirigida pelo depurador do WebView2
+  contra um diretório de reuniões fictícias: o reprodutor é parado e tirado da
+  página antes da chamada, e a exclusão concluiu em 327 ms sem recusa, sumiu da
+  lista e da busca. O diálogo abre com o foco em "Cancelar".
+- **Em lote.** Cinco reuniões, uma marcada em transcrição no banco: ela aparece
+  não selecionável com a causa; "Marcar todas as visíveis" com filtro marcou só
+  as duas do filtro; a barra somou duração e espaço pela prévia do núcleo. Uma
+  terceira reunião passou a ser transcrita entre a seleção e a confirmação: as
+  outras duas foram excluídas e a recusa apareceu com o nome dela e o motivo.
+  `Esc` e "Cancelar" saem do modo sem alterar nada.
+- **Ponta a ponta, com o motor real.** Três áudios importados pelo aplicativo,
+  transcritos pelo serviço com o `large-v3` na GPU; um excluído pela tela da
+  reunião e dois em lote. As pastas deixaram de existir, a busca por um termo de
+  cada transcrição passou a voltar vazia, e os três originais importados ficaram
+  com a mesma SHA-256 de antes.
+
+### Coberto por teste
+
+`tests/store/test_deletion.py` (prévia sem escrita, zero linhas em cada tabela e
+índice, transação interrompida no meio, arquivo aberto sem compartilhamento,
+recusa na transação restaurando a pasta, gravação, pausa, transcrição, fila,
+importação, lote e as duas interrupções), `tests/cli/test_delete.py` (contrato
+JSON exato e códigos de saída 0, 2 e 1), a fila real em
+`tests/pipeline/test_queue.py`, as duas recuperações em
+`tests/service/test_service.py`, e em Rust a desserialização de uma saída real
+do comando.
+
+### Dois defeitos encontrados ao desenhar a exclusão
+
+**As exportações recriavam a pasta de uma reunião excluída.** Regerar as
+exportações criava o diretório da reunião se ele não existisse. Uma exclusão que
+caísse entre a publicação de uma transcrição e a regeração deixaria
+`transcricao.md` numa pasta nova — uma transcrição que ninguém pediu para
+guardar, sobrevivendo à exclusão. A regeração agora recusa quando a pasta não
+existe.
+
+**A fila morria se a reunião sumisse no meio.** O laço tratava uma falha
+marcando a reunião como falha; se a reunião já não existia, essa marcação
+também falhava, e a exceção derrubava a linha de execução da fila. Agora uma
+reunião que sumiu é simplesmente deixada para trás. Os dois casos têm teste que
+falha na versão anterior.
 
 ## Decisões que valem ser lembradas
 

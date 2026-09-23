@@ -268,6 +268,18 @@ button {
   color: var(--texto);
 }
 
+/* A destructive action among quiet ones: red text, never a red block that
+   draws the eye away from the meeting. */
+.botao.discreto.perigo {
+  color: var(--gravando);
+}
+
+.botao.discreto.perigo:hover:not(:disabled) {
+  background: var(--gravando-fraco);
+  color: var(--gravando);
+  filter: none;
+}
+
 .botao.grande {
   padding: 11px 22px;
   font-size: 14.5px;
@@ -495,7 +507,8 @@ label.campo {
 .painel-lista {
   border-right: 1px solid var(--border);
   display: grid;
-  grid-template-rows: auto 1fr;
+  /* The third row is the selection bar, empty outside selection mode. */
+  grid-template-rows: auto 1fr auto;
   min-height: 0;
   background: var(--surface);
 }
@@ -534,6 +547,36 @@ label.campo {
 .item[aria-current="true"] {
   background: var(--acento-fraco);
   box-shadow: inset 3px 0 0 var(--acento);
+}
+
+.item.selecionavel {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.item.selecionavel input {
+  margin-top: 3px;
+  flex: none;
+}
+
+.item.selecionavel .corpo-do-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.item.bloqueado {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.barra-selecao {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
 }
 
 .item .titulo {

@@ -1,0 +1,57 @@
+{
+  "itens": [
+    {
+      "uid": "7f3a9c21d4e84b0f9a6c1e2d3b4a5f60",
+      "titulo": "Planejamento do trimestre",
+      "inicio": "2026-09-21T13:30:00+00:00",
+      "duracao_ms": 3512000,
+      "revisoes": 1,
+      "notas": 1,
+      "diretorio": "D:\\VoxVault-exemplo\\recordings\\7f3a9c21d4e84b0f9a6c1e2d3b4a5f60",
+      "arquivos": [
+        {
+          "caminho": "mic.flac",
+          "bytes": 181234
+        },
+        {
+          "caminho": "system.flac",
+          "bytes": 202456
+        }
+      ],
+      "bytes": 383690,
+      "motivo": "",
+      "causa": "",
+      "resultado": "excluida"
+    },
+    {
+      "uid": "c0ffee11aa22bb33cc44dd55ee66ff77",
+      "titulo": "Revisao de arquitetura",
+      "inicio": "2026-09-21T13:30:00+00:00",
+      "duracao_ms": 3512000,
+      "revisoes": 1,
+      "notas": 1,
+      "diretorio": "D:\\VoxVault-exemplo\\recordings\\c0ffee11aa22bb33cc44dd55ee66ff77",
+      "arquivos": [
+        {
+          "caminho": "mic.flac",
+          "bytes": 181234
+        },
+        {
+          "caminho": "system.flac",
+          "bytes": 202456
+        }
+      ],
+      "bytes": 383690,
+      "motivo": "a transcricao desta reuniao esta em execucao. Aguarde ela terminar para excluir a reuniao.",
+      "causa": "transcrevendo",
+      "resultado": "recusada"
+    }
+  ],
+  "total": {
+    "reunioes": 1,
+    "duracao_ms": 3512000,
+    "revisoes": 1,
+    "notas": 1,
+    "bytes": 383690
+  }
+}

@@ -253,7 +253,9 @@ def pending_finalizations(data_dir: Path) -> list[Path]:
         return []
     pending: list[Path] = []
     for directory in sorted(root.iterdir()):
-        if not directory.is_dir():
+        # A name starting with a dot is never a meeting: it is the tombstone
+        # of a deletion, resolved before this runs and never finalized.
+        if not directory.is_dir() or directory.name.startswith("."):
             continue
         metadata = read_metadata(directory)
         if metadata is None:

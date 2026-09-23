@@ -260,10 +260,7 @@ class TranscriptionPipeline:
         return recovered
 
     def pending(self) -> list:
-        return [
-            m for m in self._db.iter_meetings()
-            if str(m.attempt_state) in {AttemptState.QUEUED, AttemptState.RUNNING}
-        ]
+        return self._db.meetings_with_attempt(AttemptState.QUEUED, AttemptState.RUNNING)
 
     # -- recording interlock -------------------------------------------
 
@@ -336,6 +333,10 @@ class TranscriptionPipeline:
                 self._db.set_attempt_state(meeting.uid, AttemptState.QUEUED)
                 self._on_event("interrompida", meeting.uid)
             except Exception as exc:
+                if self._db.get_meeting(meeting.uid) is None:
+                    # Deleted once its transcript was published, while the
+                    # attempt was still being wrapped up: nothing left to mark.
+                    continue
                 self._db.set_attempt_state(
                     meeting.uid, AttemptState.FAILED, f"{type(exc).__name__}: {exc}"
                 )
@@ -345,10 +346,8 @@ class TranscriptionPipeline:
         self._idle.set()
 
     def _next_queued(self, store):
-        for meeting in store.iter_meetings():
-            if str(meeting.attempt_state) == AttemptState.QUEUED:
-                return meeting
-        return None
+        waiting = store.meetings_with_attempt(AttemptState.QUEUED)
+        return waiting[0] if waiting else None
 
     def _release_worker(self) -> None:
         with self._lock:
@@ -368,6 +367,13 @@ class TranscriptionPipeline:
     # -- one meeting ---------------------------------------------------
 
     def _process(self, meeting) -> None:
+        # Claimed with one conditional write instead of chosen and then
+        # marked. Between the choice and the claim the meeting may have been
+        # deleted, and the database is what decides which of the two came
+        # first: losing the claim just means there is nothing here to do.
+        if not self._db.claim_queued(meeting.uid):
+            return
+
         directory = Path(meeting.directory)
         tracks = available_tracks(directory)
         if not tracks:
@@ -377,7 +383,6 @@ class TranscriptionPipeline:
             )
             return
 
-        self._db.set_attempt_state(meeting.uid, AttemptState.RUNNING)
         self._on_event("transcrevendo", meeting.uid)
 
         vocabulary = self._config.vocabulary

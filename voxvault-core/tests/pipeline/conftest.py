@@ -41,6 +41,8 @@ class FakeWorker:
         self.engine = ENGINE
         self.alive = True
         self.jobs: list[tuple[str, str, str]] = []
+        #: every audio file the engine was asked to read, in order
+        self.paths: list[Path] = []
         self.killed = 0
         #: track name -> error message, for tracks that should fail
         self.fail_tracks: dict[str, str] = {}
@@ -55,6 +57,7 @@ class FakeWorker:
 
         index = len(self.jobs)
         self.jobs.append((track, language, vocabulary))
+        self.paths.append(audio_path)
         if self.interrupt_at is not None and index >= self.interrupt_at:
             raise _Interrupted()
         if track in self.fail_tracks:

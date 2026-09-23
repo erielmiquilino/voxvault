@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::paths;
 
@@ -97,6 +97,24 @@ fn finish(output: Output) -> CoreResult<String> {
             detalhe
         },
     })
+}
+
+/// Run a command whose exit status carries a result, not only success.
+///
+/// `voxvault delete` exits with 2 when some meeting was refused and still
+/// prints the full JSON report, so 2 is an answer to read and not a failure.
+fn run_accepting(args: &[&str], accepted: &[i32]) -> CoreResult<String> {
+    let output = build(args)?
+        .output()
+        .map_err(|err| CoreError::Execucao {
+            detalhe: err.to_string(),
+        })?;
+    match output.status.code() {
+        Some(code) if accepted.contains(&code) => {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        _ => finish(output),
+    }
 }
 
 /// Run a command and return its raw stdout.
@@ -228,6 +246,77 @@ pub fn remove_audio(uid: &str, confirmado: bool) -> CoreResult<String> {
     }
 }
 
+/// One file a deletion removes, relative to the meeting's directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArquivoDaExclusao {
+    pub caminho: String,
+    pub bytes: u64,
+}
+
+/// One meeting of a `voxvault delete --json` report.
+///
+/// `motivo` is the sentence to show a person and `causa` the same refusal as
+/// one word to branch on; both are empty when nothing refuses. `resultado`
+/// only exists once the deletion was confirmed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemDaExclusao {
+    pub uid: String,
+    pub titulo: String,
+    pub inicio: Option<String>,
+    pub duracao_ms: i64,
+    pub revisoes: u32,
+    pub notas: u32,
+    pub diretorio: String,
+    pub arquivos: Vec<ArquivoDaExclusao>,
+    pub bytes: u64,
+    pub motivo: String,
+    pub causa: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resultado: Option<String>,
+}
+
+/// What the deleted, or to-be-deleted, meetings add up to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TotalDaExclusao {
+    pub reunioes: u32,
+    pub duracao_ms: i64,
+    pub revisoes: u32,
+    pub notas: u32,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Exclusao {
+    pub itens: Vec<ItemDaExclusao>,
+    pub total: TotalDaExclusao,
+}
+
+/// `voxvault delete <uid>... --json [--yes]`.
+///
+/// Without confirmation the core only describes what it would remove, and
+/// that description -- sums included -- is what the confirmation shows, so the
+/// number the person agrees to is the number the core then deletes.
+pub fn delete(uids: &[String], confirmar: bool) -> CoreResult<Exclusao> {
+    let mut args: Vec<&str> = vec!["delete"];
+    args.extend(uids.iter().map(String::as_str));
+    args.push("--json");
+    if confirmar {
+        args.push("--yes");
+    }
+    let text = run_accepting(&args, &[0, 2])?;
+    parse_exclusao(&text)
+}
+
+fn parse_exclusao(text: &str) -> CoreResult<Exclusao> {
+    serde_json::from_str(text).map_err(|err| CoreError::Resposta {
+        detalhe: format!(
+            "O núcleo respondeu à exclusão com algo fora do formato esperado \
+             ({err}). Rode `voxvault delete <reunião> --json` num terminal para \
+             ver a saída crua."
+        ),
+    })
+}
+
 /// `voxvault import <file>`; the core prints a confirmation, not JSON, so the
 /// result is only "it worked or it did not".
 pub fn import(file: &str, title: &str) -> CoreResult<String> {
@@ -295,4 +384,53 @@ pub fn config_set(assignments: &[String]) -> CoreResult<String> {
     let mut args: Vec<&str> = vec!["config"];
     args.extend(assignments.iter().map(String::as_str));
     run(&args)
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    /// Captured from the core, not written by hand: `voxvault delete 7f3a
+    /// c0ffee --yes --json` over two meetings, the second one being
+    /// transcribed at that moment.
+    const SAIDA_REAL: &str = include_str!("../tests/fixtures/exclusao-com-recusa.json");
+
+    #[test]
+    fn uma_saida_real_com_uma_recusa_vira_tipos() {
+        let exclusao = parse_exclusao(SAIDA_REAL).expect("o formato do núcleo mudou");
+
+        assert_eq!(exclusao.itens.len(), 2);
+        let (excluida, recusada) = (&exclusao.itens[0], &exclusao.itens[1]);
+
+        assert_eq!(excluida.resultado.as_deref(), Some("excluida"));
+        assert_eq!(excluida.titulo, "Planejamento do trimestre");
+        assert_eq!(excluida.causa, "");
+        assert_eq!(excluida.arquivos.len(), 2);
+        assert_eq!(
+            excluida.bytes,
+            excluida.arquivos.iter().map(|a| a.bytes).sum::<u64>()
+        );
+
+        assert_eq!(recusada.resultado.as_deref(), Some("recusada"));
+        assert_eq!(recusada.causa, "transcrevendo");
+        assert!(recusada.motivo.contains("em execucao"));
+
+        // The total counts only what was deleted.
+        assert_eq!(exclusao.total.reunioes, 1);
+        assert_eq!(exclusao.total.bytes, excluida.bytes);
+        assert_eq!(exclusao.total.duracao_ms, excluida.duracao_ms);
+    }
+
+    #[test]
+    fn uma_previa_nao_traz_resultado() {
+        let previa = r#"{"itens":[{"uid":"abc","titulo":"","inicio":null,
+            "duracao_ms":0,"revisoes":0,"notas":0,"diretorio":"","arquivos":[],
+            "bytes":0,"motivo":"Nenhuma reuniao comeca com 'abc'.",
+            "causa":"identificador"}],
+            "total":{"reunioes":0,"duracao_ms":0,"revisoes":0,"notas":0,"bytes":0}}"#;
+        let exclusao = parse_exclusao(previa).unwrap();
+        assert_eq!(exclusao.itens[0].resultado, None);
+        assert_eq!(exclusao.itens[0].inicio, None);
+        assert_eq!(exclusao.itens[0].causa, "identificador");
+    }
 }

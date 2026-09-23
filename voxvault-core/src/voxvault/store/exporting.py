@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
+from ..errors import StorageError
 from ..types import TimelineEntry
 from .models import ExportStatus, Meeting, Revision, from_ms
 from .notes import Note, NoteAuthor, NoteAuthorKind, NoteKind
@@ -126,7 +127,14 @@ def regenerate_exports(store: TranscriptStore, meeting_uid: str) -> ExportStatus
     entries = store.timeline(meeting_uid)
     notes = store.notes_of(meeting_uid)
     readable, structured = export_paths(meeting)
-    readable.parent.mkdir(parents=True, exist_ok=True)
+    if not readable.parent.is_dir():
+        # Never recreated here. A meeting's directory only goes away when the
+        # meeting is being deleted, and exports written into a fresh one would
+        # outlive the deletion as a transcript nobody asked to keep.
+        raise StorageError(
+            f"O diretorio da reuniao '{meeting_uid}' nao existe mais "
+            f"({readable.parent}). As exportacoes nao foram geradas."
+        )
     _write_atomic(readable, render_readable(meeting, active, entries, notes=notes))
     _write_atomic(
         structured, render_structured(meeting, active, entries, notes=notes)
@@ -379,15 +387,11 @@ def _write_atomic(path: Path, content: str) -> None:
 def _require(store: TranscriptStore, meeting_uid: str) -> Meeting:
     meeting = store.get_meeting(meeting_uid)
     if meeting is None:
-        from ..errors import StorageError
-
         raise StorageError(f"Reuniao '{meeting_uid}' nao encontrada.")
     return meeting
 
 
 def raise_no_revision(meeting_uid: str) -> None:
-    from ..errors import StorageError
-
     raise StorageError(
         f"A reuniao '{meeting_uid}' nao tem revisao ativa: nao ha o que exportar."
     )

@@ -370,3 +370,73 @@ def test_health_and_the_shutdown_guard_agree(service: ResidentService, monkeypat
     assert blocked is False, (
         "saude diz que nao ha trabalho; a guarda tem de concordar"
     )
+
+
+# -- deletions a dead process left half done ---------------------------
+
+def _meeting_on_disk(service: ResidentService, uid: str) -> Path:
+    from datetime import UTC, datetime
+
+    from voxvault.layout import meeting_dir
+    from voxvault.types import MeetingState
+
+    directory = meeting_dir(service.config.data_dir, uid)
+    directory.mkdir(parents=True)
+    (directory / "mic.flac").write_bytes(b"m" * 64)
+    (directory / "metadados.json").write_text("{}", encoding="utf-8")
+    service.store.create_meeting(
+        uid=uid, title="Reuniao interrompida", directory=directory,
+        started_at=datetime(2026, 3, 2, 14, 0, tzinfo=UTC),
+        state=MeetingState.RECORDED,
+    )
+    return directory
+
+
+class _Crash(BaseException):
+    """The process dying: nothing after this point runs."""
+
+
+def _delete_until(service: ResidentService, uid: str, point: str) -> None:
+    from voxvault.store import deletion
+
+    def hook(label: str) -> None:
+        if label == point:
+            raise _Crash(point)
+
+    deletion.interruption_hook = hook
+    try:
+        with pytest.raises(_Crash):
+            deletion.delete_meeting(service.store.handle, uid)
+    finally:
+        deletion.interruption_hook = None
+
+
+def test_recovery_restores_a_meeting_whose_rows_were_never_deleted(
+    service: ResidentService,
+) -> None:
+    """Scenario: Interrupcao no meio da exclusao -- before the transaction."""
+    directory = _meeting_on_disk(service, "reuniao-a")
+    _delete_until(service, "reuniao-a", "depois_de_renomear")
+    assert not directory.exists()
+
+    summary = service.recover()
+
+    assert summary["exclusoes"] == 1
+    assert (directory / "mic.flac").is_file()
+    assert service.store.get_meeting("reuniao-a") is not None
+    assert not list(directory.parent.glob(".excluindo-*"))
+
+
+def test_recovery_finishes_a_deletion_whose_rows_are_gone(
+    service: ResidentService,
+) -> None:
+    """Scenario: Interrupcao no meio da exclusao -- after the transaction."""
+    directory = _meeting_on_disk(service, "reuniao-b")
+    _delete_until(service, "reuniao-b", "depois_do_banco")
+    assert list(directory.parent.glob(".excluindo-*"))
+
+    summary = service.recover()
+
+    assert summary["exclusoes"] == 1
+    assert service.store.get_meeting("reuniao-b") is None
+    assert list(directory.parent.iterdir()) == []

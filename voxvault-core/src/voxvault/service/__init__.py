@@ -140,10 +140,23 @@ class ResidentService:
         """Pick up whatever the last run left unfinished.
 
         Runs before anything is served, so a client never sees a half-recovered
-        picture: finalizations that stopped mid-way, attempts that were running
-        when the process died, and exports that drifted from their revision.
+        picture: deletions a dead process left half done, finalizations that
+        stopped mid-way, attempts that were running when the process died, and
+        exports that drifted from their revision.
+
+        Deletions come first. A tombstone is a meeting directory under another
+        name, and nothing after this step should ever look inside one.
         """
-        summary = {"finalizacoes": 0, "tentativas": 0, "exportacoes": 0}
+        summary = {
+            "exclusoes": 0, "finalizacoes": 0, "tentativas": 0, "exportacoes": 0,
+        }
+
+        try:
+            from ..store.deletion import resolve_tombstones
+
+            summary["exclusoes"] = resolve_tombstones(self.store, self.config.data_dir)
+        except Exception as exc:
+            self._record_event("aviso", f"exclusoes interrompidas: {exc}")
 
         from ..session.finalize import (
             finalize_session,

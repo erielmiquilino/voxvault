@@ -18,24 +18,55 @@ from .conftest import ENGINE, call
 
 # -- the surface -------------------------------------------------------
 
+#: Tools that must never exist, by exact name.
+FORBIDDEN_TOOLS = frozenset({
+    "remover_reuniao", "apagar_reuniao", "alterar_segmento",
+    "editar_transcricao", "remover_audio", "iniciar_gravacao",
+    "gravar", "reprocessar", "transcrever",
+})
+#: Words that make a tool name a deletion whatever else it says. Deleting a
+#: meeting is possible from the interface and the command line, and never from
+#: an agent.
+DELETION_TERMS = ("excluir", "delete", "apagar", "remover_reuniao")
+
+
+def _damaging(names: set[str]) -> set[str]:
+    """Every tool name that crosses the boundary, for whichever reason."""
+    crossing = names & FORBIDDEN_TOOLS
+    crossing |= {n for n in names if any(term in n.lower() for term in DELETION_TERMS)}
+    # Everything that writes must be about notes, nothing else.
+    crossing |= {
+        n for n in names
+        if n.startswith(("criar", "atualizar", "remover")) and "nota" not in n
+    }
+    return crossing
+
+
+def _tool_names(server) -> set[str]:
+    import asyncio
+
+    return {t.name for t in asyncio.run(server.list_tools())}
+
+
 def test_no_tool_can_damage_the_record(server) -> None:
     """The whole point of the boundary: an agent reads, and writes only notes.
 
     A transcript is evidence of a conversation that happened. An agent able to
-    edit it would make it worthless as evidence.
+    edit it would make it worthless as evidence -- and one able to delete the
+    meeting would make it disappear.
     """
-    import asyncio
+    assert _damaging(_tool_names(server)) == set()
 
-    names = {t.name for t in asyncio.run(server.list_tools())}
-    forbidden = {
-        "remover_reuniao", "apagar_reuniao", "alterar_segmento",
-        "editar_transcricao", "remover_audio", "iniciar_gravacao",
-        "gravar", "reprocessar", "transcrever",
-    }
-    assert not (names & forbidden)
-    # Everything that writes must be about notes, nothing else.
-    writers = {n for n in names if n.startswith(("criar", "atualizar", "remover"))}
-    assert all("nota" in n for n in writers), writers
+
+@pytest.mark.parametrize("name", ["excluir_reuniao", "delete_meeting", "remover_reuniao"])
+def test_a_deletion_tool_would_be_caught(server, name) -> None:
+    """The check above has to be able to fail: register one on purpose."""
+
+    @server.tool(name=name, description="ferramenta de exclusao de teste")
+    def _exclusao(reuniao_id: str) -> str:
+        return reuniao_id
+
+    assert _damaging(_tool_names(server)) == {name}
 
 
 def test_every_write_tool_has_a_read_path_for_its_identifiers(server) -> None:
