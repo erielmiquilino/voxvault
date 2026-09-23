@@ -22,6 +22,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from .. import __version__
 from ..config import Config, load_config
 from .cursors import STABLE_BASE, Tool, decode, issue
 from .pagination import (
@@ -656,7 +657,7 @@ def build_server(config: Config | None = None):
             "cursor: passe o 'proximo_cursor' recebido para continuar, e trate "
             "'ha_mais' como a indicação de que ainda falta conteúdo."
         ),
-        version="0.1.0",
+        version=__version__,
     )
     _register(server)
     return server
