@@ -296,8 +296,13 @@ class TrackWriter:
             raw = packet.data[offset:]
             if packet.silent:
                 # The OS says the buffer is silence and its contents are
-                # undefined; synthesising the silence is cheaper and correct.
-                payload += self._silence_at_target(placement.write_frames)
+                # undefined, so the silence is synthesised -- in the device's
+                # frames and through the same conversion as any audio. Written
+                # straight at the target rate, a 48 kHz packet took three times
+                # its length, and everything after it landed late in the file
+                # while the timeline said otherwise.
+                zeros = bytes(placement.write_frames * self.source_format.block_align)
+                payload += self._to_target(zeros, placement.write_frames).tobytes()
             else:
                 payload += self._to_target(raw, placement.write_frames).tobytes()
 

@@ -177,6 +177,43 @@ def test_silent_packet_is_written_as_silence(writer) -> None:
     assert set(data) == {0}, "conteudo de pacote silencioso nao pode ser escrito"
 
 
+def test_silent_packets_take_exactly_their_duration(writer) -> None:
+    """Found in a real hour: a loopback the OS kept open between sounds
+    delivered packets flagged silent, and each was written three times its
+    length -- the device's 48 kHz frames taken as 16 kHz ones. The timeline
+    said nothing was wrong while the file ran 16.7 s ahead of it."""
+    for index in range(100):  # one second, all of it flagged silent
+        writer.write_packet(packet(index, silent=True))
+    writer.close()
+
+    frames = read_frames(writer.path)
+    assert abs(frames - TARGET_RATE) <= 4, (
+        f"1 s de pacotes silenciosos virou {frames / TARGET_RATE:.2f} s no arquivo"
+    )
+
+
+def test_audio_after_silent_packets_lands_where_the_timeline_says(writer) -> None:
+    """Half a second of tone, half a second flagged silent, then tone again:
+    the second tone starts in the file at 1.0 s, not after the silence grew."""
+    for index in range(50):
+        writer.write_packet(packet(index))
+    for index in range(50, 100):
+        writer.write_packet(packet(index, silent=True))
+    for index in range(100, 150):
+        writer.write_packet(packet(index))
+    writer.close()
+
+    with wave.open(str(writer.path), "rb") as handle:
+        total = handle.getnframes()
+        samples = struct.unpack(f"<{total}h", handle.readframes(total))
+    assert abs(total - int(1.5 * TARGET_RATE)) <= 4
+    assert abs(len(samples) - writer.timeline_ms * TARGET_RATE // 1000) <= 4
+    first_loud = next(i for i in range(TARGET_RATE // 2 + 800, total) if samples[i])
+    assert abs(first_loud - TARGET_RATE) <= 800, (
+        f"o segundo tom comecou em {first_loud / TARGET_RATE:.3f} s, nao em 1,000 s"
+    )
+
+
 def test_discontinuity_flag_is_counted(writer) -> None:
     writer.write_packet(packet(0))
     writer.write_packet(packet(1, discontinuity=True))
