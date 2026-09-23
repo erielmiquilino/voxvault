@@ -577,6 +577,22 @@ ainda liberava as travas do processo morto: `disk I/O error`. O leitor do
 próprio banco se recupera disso na primeira tentativa — conferido em sete
 rodadas —, e o teste passou a ler por ele.
 
+### Depois da publicação
+
+**Uma gravação sem sessão não podia ser excluída.** O usuário tentou excluir uma
+reunião da madrugada de 23/09, transcrita, e cada clique respondia "está sendo
+gravada". O encerramento tinha terminado os arquivos e enfileirado a
+transcrição, mas a linha no banco nunca saiu de "gravando" — o que acontece
+quando o processo morre entre os arquivos e o banco, quando a escrita do
+encerramento falha ou quando a máquina suspende no meio —, e a recuperação só
+olhava finalizações interrompidas no disco. Agora, na partida e na retomada da
+suspensão, toda reunião aberta que não é a sessão viva é fechada pelo que os
+seus arquivos dizem; três testes cobrem o fechamento, a reunião sem áudio e a
+gravação viva, que fica intocada. A interface também deixou de empilhar a
+mesma mensagem: repetida, renova a que está na tela, em vez das oito cópias
+que o usuário viu. Na `main`, não na 0.1.0; a reunião dele foi fechada à mão
+do mesmo jeito que a recuperação faria.
+
 ### Em aberto
 
 - **As somas da 0.1.0 saíram com CRLF**, e o `sha256sum -c` do Linux não as
