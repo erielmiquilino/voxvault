@@ -9,7 +9,7 @@
 //! | Step           | What runs                                        | Skipped when                  |
 //! |----------------|--------------------------------------------------|-------------------------------|
 //! | `interpretador`| `uv python install 3.12 --no-bin --no-registry`  | already in `runtime\python`   |
-//! | `dependencias` | `uv sync --extra engine --extra mcp`             | never (in date in seconds)    |
+//! | `dependencias` | `uv sync --extra engine --extra mcp`, cache first | never (in date in seconds)    |
 //! | `gpu`          | `uv sync ... --extra cuda`                       | no GPU that holds a model     |
 //! | `configuracao` | `voxvault config data_dir=...`                   | the same value is configured  |
 //! | `modelo`       | `voxvault models download --json`                | every file already on disk    |
@@ -807,28 +807,50 @@ pub fn preparar(app: &AppHandle, pasta: Option<String>) -> Result<(), FalhaDoPre
     // dependencias e gpu
     let sincronizar = |etapa: &str, o_que: &str, extras: &[&str], exato: bool, total: u64| {
         avisar(app, etapa, "em_andamento", format!("Instalando {o_que}."));
-        let mut comando = comando_uv(&uv, &runtime);
-        comando.arg("sync").arg("--project").arg(&nucleo).args([
-            "--frozen",
-            "--no-dev",
-            "--no-editable",
-            "--python-preference",
-            "only-managed",
-            "--python",
-            PYTHON,
-        ]);
-        for extra in extras {
-            comando.args(["--extra", extra]);
-        }
-        if !exato {
-            // Keeps what a later step adds: without it, the CUDA libraries
-            // would be removed here only to be linked back one step later.
-            comando.arg("--inexact");
-        }
-        let (ok, saida) = executar(app, etapa, comando, Some((runtime.join("cache"), total)), |_| {})
+        let montar = |offline: bool| {
+            let mut comando = comando_uv(&uv, &runtime);
+            comando.arg("sync").arg("--project").arg(&nucleo).args([
+                "--frozen",
+                "--no-dev",
+                "--no-editable",
+                "--python-preference",
+                "only-managed",
+                "--python",
+                PYTHON,
+            ]);
+            for extra in extras {
+                comando.args(["--extra", extra]);
+            }
+            if !exato {
+                // Keeps what a later step adds: without it, the CUDA libraries
+                // would be removed here only to be linked back one step later.
+                comando.arg("--inexact");
+            }
+            if etapa == "dependencias" {
+                // uv decides whether a local project changed by its
+                // pyproject.toml, and the installer keeps every file's original
+                // date: an update whose core changed but whose pyproject did not
+                // would keep the old core in the environment. Rebuilding it is
+                // pure Python, a few seconds.
+                comando.args(["--reinstall-package", "voxvault-core"]);
+            }
+            if offline {
+                comando.arg("--offline");
+            }
+            comando
+        };
+        // From the cache first. An update whose lock did not change has every
+        // package there already -- the build backend included -- and uv would
+        // still ask the index to confirm it, failing on a machine that is
+        // offline for no reason. Only what the cache lacks goes to the network.
+        let (ok, _) = executar(app, etapa, montar(true), Some((runtime.join("cache"), total)), |_| {})
             .map_err(|err| causa(etapa, o_que, &err))?;
         if !ok {
-            return Err(causa(etapa, o_que, &saida));
+            let (ok, saida) = executar(app, etapa, montar(false), Some((runtime.join("cache"), total)), |_| {})
+                .map_err(|err| causa(etapa, o_que, &err))?;
+            if !ok {
+                return Err(causa(etapa, o_que, &saida));
+            }
         }
         avisar(app, etapa, "concluida", "");
         Ok(())
