@@ -7,7 +7,7 @@
 //! tenth of the memory, and everything that has to keep working unseen.
 
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder};
 
@@ -19,6 +19,9 @@ pub const ROTULO: &str = "main";
 /// Where a fresh process opens. Collapsing and reopening keeps the last route
 /// instead; this is only the answer for a window nobody has seen yet.
 pub const ROTA_INICIAL: &str = "gravacao";
+/// Time for WebView2 to finish tearing a window down before what it left in
+/// this process is handed back.
+const ESPERA_PARA_DEVOLVER: Duration = Duration::from_secs(10);
 
 /// Show the window, building it if it does not exist, on `rota` if given.
 ///
@@ -78,6 +81,7 @@ fn trazer_para_frente(janela: &WebviewWindow) {
 
 /// The window went to the tray, by closing or minimizing. The first time ever,
 /// say where the app went and how to really quit; never again after that.
+/// Once the webview is gone, the memory it left is handed back.
 pub fn recolhida(app: &AppHandle) {
     let estado = app.state::<Residente>();
     let mostrar = {
@@ -95,6 +99,14 @@ pub fn recolhida(app: &AppHandle) {
     if mostrar {
         avisos::mostrar(app, avisos::Aviso::bandeja());
     }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(ESPERA_PARA_DEVOLVER);
+        // Reopened meanwhile: its pages are in use again.
+        if app.get_webview_window(ROTULO).is_none() {
+            crate::system::devolver_memoria_ociosa();
+        }
+    });
 }
 
 /// What the interface reported when it finished drawing the restored route.

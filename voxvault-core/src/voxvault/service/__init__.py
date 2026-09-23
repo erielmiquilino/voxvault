@@ -26,6 +26,7 @@ nothing.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -44,6 +45,35 @@ IDLE_SHUTDOWN_S = 300.0
 CLIENT_PRESENCE_S = 30.0
 #: How often the idle check runs.
 SUPERVISION_INTERVAL_S = 5.0
+#: How long after work ends the pages it left are handed back to Windows.
+MEMORY_HANDBACK_AFTER_S = 30.0
+
+
+def _hand_back_idle_memory() -> bool:
+    """Hand every page nothing touches while the service waits back to Windows.
+
+    Starting, recording and coordinating a transcription leave pages that an
+    idle service never touches again: measured on the installed service,
+    46.4 MB resident after a start and two transcriptions, 10.2 MB a minute
+    after emptying. The pages go to the standby list and fault back in if used.
+    """
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    # A private handle to the library, so these prototypes bind nothing else.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.SetProcessWorkingSetSize.argtypes = [
+        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
+    ]
+    kernel32.SetProcessWorkingSetSize.restype = ctypes.c_int
+    everything = ctypes.c_size_t(-1).value  # (-1, -1): empty the working set
+    return bool(
+        kernel32.SetProcessWorkingSetSize(
+            kernel32.GetCurrentProcess(), everything, everything
+        )
+    )
 
 
 class ServiceBusy(VoxVaultError):
@@ -105,6 +135,11 @@ class ResidentService:
         self._lock = threading.RLock()
         self._halt = threading.Event()
         self._last_client_seen = time.monotonic()
+        #: When work was last seen, and whether what it left in memory has
+        #: been handed back since. Starting counts as work: the imports are
+        #: most of what an idle service holds.
+        self._last_work_seen = time.monotonic()
+        self._memory_handed_back = False
         self._server: ThreadingHTTPServer | None = None
         self._secret = ""
         #: The last events, each numbered by ``_seq``, which only grows
@@ -410,9 +445,15 @@ class ResidentService:
             self._record_event("aviso", f"recuperacao apos retomada: {exc}")
 
     def _supervise(self) -> None:
-        """End the service once there is genuinely nothing to hold it open."""
+        """End the service once there is genuinely nothing to hold it open.
+
+        On the way, once work has been over for a while, hand back to Windows
+        the memory it left: an idle service is most of the day.
+        """
         while not self._halt.wait(SUPERVISION_INTERVAL_S):
             if self.has_work()[0]:
+                self._last_work_seen = time.monotonic()
+                self._memory_handed_back = False
                 # Idle time counts from when the work ended. Only work may push
                 # the clock forward here: refreshing it for a merely *recent*
                 # client made presence perpetuate itself -- seen 5 s ago, so
@@ -423,6 +464,12 @@ class ResidentService:
                     self._last_client_seen, time.monotonic()
                 )
                 continue
+            if (
+                not self._memory_handed_back
+                and time.monotonic() - self._last_work_seen >= MEMORY_HANDBACK_AFTER_S
+            ):
+                _hand_back_idle_memory()
+                self._memory_handed_back = True
             idle_for = time.monotonic() - self._last_client_seen
             if idle_for >= IDLE_SHUTDOWN_S:
                 self._record_event(

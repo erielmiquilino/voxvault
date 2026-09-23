@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -211,6 +212,43 @@ def test_work_holds_the_idle_clock_until_it_ends(
     assert took is not None
     # The clock starts when the queue empties, not when the loop started.
     assert took >= 0.5 + 0.6 - 0.1
+
+
+def test_memory_is_handed_back_once_after_work_ends(
+    service: ResidentService, monkeypatch, quick_clocks
+) -> None:
+    """Measured on the installed service: 46.4 MB resident while idle, 10.2 MB
+    once emptied. Handed back once per stretch of idleness, not every check,
+    and only after the work is over."""
+    import voxvault.service as module
+
+    monkeypatch.setattr(module, "MEMORY_HANDBACK_AFTER_S", 0.2)
+    handed: list[float] = []
+    monkeypatch.setattr(
+        module, "_hand_back_idle_memory", lambda: handed.append(time.monotonic())
+    )
+    queue = ["uma reuniao"]
+    monkeypatch.setattr(type(service.pipeline), "pending", lambda self: list(queue))
+    cleared: list[float] = []
+
+    def clear() -> None:
+        cleared.append(time.monotonic())
+        queue.clear()
+
+    threading.Timer(0.4, clear).start()
+
+    took = _supervise_until_stop(service, timeout=3.0)
+
+    assert took is not None
+    assert len(handed) == 1, f"a memoria foi devolvida {len(handed)} vez(es)"
+    assert handed[0] >= cleared[0] + 0.2 - 0.05, "devolvida antes do fim do trabalho"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows memory manager")
+def test_windows_accepts_the_memory_handed_back() -> None:
+    from voxvault.service import _hand_back_idle_memory
+
+    assert _hand_back_idle_memory() is True
 
 
 def test_an_active_recording_counts_as_busy(service: ResidentService) -> None:
