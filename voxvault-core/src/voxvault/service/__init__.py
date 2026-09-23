@@ -321,7 +321,13 @@ class ResidentService:
     def _supervise(self) -> None:
         """End the service once there is genuinely nothing to hold it open."""
         while not self._halt.wait(SUPERVISION_INTERVAL_S):
-            if self.busy():
+            if self.has_work()[0]:
+                # Idle time counts from when the work ended. Only work may push
+                # the clock forward here: refreshing it for a merely *recent*
+                # client made presence perpetuate itself -- seen 5 s ago, so
+                # refreshed to now, so seen 5 s ago at the next check -- and a
+                # service that one client had ever touched never ended. A
+                # client that is really connected keeps touching on its own.
                 self._last_client_seen = max(
                     self._last_client_seen, time.monotonic()
                 )

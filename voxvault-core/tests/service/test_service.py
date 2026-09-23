@@ -159,6 +159,60 @@ def test_nothing_happening_is_not_busy(service: ResidentService) -> None:
     assert service.busy() is False
 
 
+@pytest.fixture
+def quick_clocks(monkeypatch):
+    """The production ratios -- presence window well above the check period --
+    shrunk so the real supervision loop runs in a fraction of a second."""
+    import voxvault.service as module
+
+    monkeypatch.setattr(module, "SUPERVISION_INTERVAL_S", 0.02)
+    monkeypatch.setattr(module, "CLIENT_PRESENCE_S", 0.3)
+    monkeypatch.setattr(module, "IDLE_SHUTDOWN_S", 0.6)
+
+
+def _supervise_until_stop(service: ResidentService, timeout: float) -> float | None:
+    """Run the real loop; return how long it took to end the service, or None."""
+    stopped = threading.Event()
+    service.stop = stopped.set
+    started = time.monotonic()
+    threading.Thread(target=service._supervise, daemon=True).start()
+    if not stopped.wait(timeout):
+        service._halt.set()
+        return None
+    return time.monotonic() - started
+
+
+def test_one_client_touching_once_does_not_keep_the_service_forever(
+    service: ResidentService, monkeypatch, quick_clocks
+) -> None:
+    """The bug this guards: the loop refreshed "last client seen" whenever a
+    client had been seen recently, so every check re-armed the presence
+    window it was checking. A service one client had ever touched never ended
+    -- measured on this machine, still resident 38 minutes into doing nothing.
+    """
+    monkeypatch.setattr(type(service.pipeline), "pending", lambda self: [])
+    service.touch()
+
+    took = _supervise_until_stop(service, timeout=3.0)
+
+    assert took is not None, "servico tocado uma vez nunca encerrou por ociosidade"
+    assert took >= 0.5, "encerrou antes do prazo de ociosidade"
+
+
+def test_work_holds_the_idle_clock_until_it_ends(
+    service: ResidentService, monkeypatch, quick_clocks
+) -> None:
+    queue = ["uma reuniao"]
+    monkeypatch.setattr(type(service.pipeline), "pending", lambda self: list(queue))
+    threading.Timer(0.5, queue.clear).start()
+
+    took = _supervise_until_stop(service, timeout=3.0)
+
+    assert took is not None
+    # The clock starts when the queue empties, not when the loop started.
+    assert took >= 0.5 + 0.6 - 0.1
+
+
 def test_an_active_recording_counts_as_busy(service: ResidentService) -> None:
     from voxvault.service import CLIENT_PRESENCE_S
 
