@@ -519,9 +519,22 @@ def _cmd_import(args: argparse.Namespace) -> int:
 
     sys.stdout.write(
         f"Importada como {uid}\n  {directory}\n"
-        f"\nEnfileirada para transcricao. Rode 'voxvault queue --run'.\n"
+        f"\nEnfileirada para transcricao. {_who_transcribes(config)}\n"
     )
     return 0
+
+
+def _who_transcribes(config) -> str:
+    """The next step for a queued import: none, when the service will take it."""
+    from ..service.rendezvous import live_rendezvous
+
+    found = live_rendezvous()
+    if found is not None and (
+        not found.diretorio_de_dados
+        or Path(found.diretorio_de_dados) == Path(config.data_dir)
+    ):
+        return "O servico residente vai transcreve-la."
+    return "Rode 'voxvault queue --run'."
 
 
 def _meeting_json(store, meeting) -> dict:
@@ -581,7 +594,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             )
             tentativa = str(meeting.attempt_state)
             sys.stdout.write(
-                f"{meeting.uid[:8]}  {meeting.started_at:%d/%m/%Y %H:%M}  "
+                f"{meeting.uid[:8]}  {meeting.started_at.astimezone():%d/%m/%Y %H:%M}  "
                 f"{meeting.duration_ms / 1000:7.1f}s  {meeting.title[:40]:<40}  "
                 f"{disponivel} | tentativa: {tentativa}\n"
             )
@@ -821,7 +834,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             return 0
 
         sys.stdout.write(f"\n{meeting.title}\n")
-        sys.stdout.write(f"{meeting.started_at:%d/%m/%Y %H:%M} | "
+        sys.stdout.write(f"{meeting.started_at.astimezone():%d/%m/%Y %H:%M} | "
                          f"{meeting.duration_ms / 1000:.1f}s\n")
         if revision is None:
             sys.stdout.write(
