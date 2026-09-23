@@ -403,7 +403,7 @@ causa, e o README e as notas da release explicam o que fazer.
 ## Distribuição pública
 
 **Implementada, verificada instalada de ponta a ponta e publicada como
-0.1.0.** O instalador leva o núcleo e o `uv`, não Python: o preparo do primeiro uso monta
+0.1.0 e, com a primeira correção, 0.1.1.** O instalador leva o núcleo e o `uv`, não Python: o preparo do primeiro uso monta
 o ambiente em `%USERPROFILE%\.voxvault\runtime` a partir do `uv.lock`
 versionado. O repositório é público em `github.com/erielmiquilino/voxvault`,
 com o CI verde e a `main` protegida como a do `ia-monitor`.
@@ -590,8 +590,12 @@ suspensão, toda reunião aberta que não é a sessão viva é fechada pelo que 
 seus arquivos dizem; três testes cobrem o fechamento, a reunião sem áudio e a
 gravação viva, que fica intocada. A interface também deixou de empilhar a
 mesma mensagem: repetida, renova a que está na tela, em vez das oito cópias
-que o usuário viu. Na `main`, não na 0.1.0; a reunião dele foi fechada à mão
-do mesmo jeito que a recuperação faria.
+que o usuário viu. A reunião dele foi fechada à mão do mesmo jeito que a
+recuperação faria, e a correção saiu na 0.1.1 — com o servidor MCP passando a
+informar a versão do núcleo em vez de um "0.1.0" escrito no código. A 0.1.1,
+instalada aqui por cima da 0.1.0, refez o ambiente pelo cache sozinha e
+responde 0.1.1 no serviço e no MCP; as somas dela já saem com LF, e o
+`sha256sum -c` as confere.
 
 ### Em aberto
 
