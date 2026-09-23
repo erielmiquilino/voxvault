@@ -25,7 +25,7 @@ from voxvault.service.rendezvous import Rendezvous, publish
 SECRET = "segredo-de-teste"
 
 
-def _status(profile: Path, data_dir: Path) -> tuple[int, dict]:
+def _status(profile: Path, data_dir: Path, **extra: str) -> tuple[int, dict]:
     root = Path(__file__).resolve().parents[2] / "src"
     env = {
         **os.environ,
@@ -33,6 +33,7 @@ def _status(profile: Path, data_dir: Path) -> tuple[int, dict]:
         "VOXVAULT_DATA_DIR": str(data_dir),
         "PYTHONPATH": str(root),
         "PYTHONIOENCODING": "utf-8",
+        **extra,
     }
     result = subprocess.run(
         [sys.executable, "-m", "voxvault.cli", "serve", "--status", "--json"],
@@ -118,6 +119,26 @@ def test_a_recording_in_progress_is_reported(profile: Path, tmp_path: Path, runn
         # The service's own data directory, not the one this process resolved.
         "diretorio_de_dados": str(servico),
     }
+
+
+def test_a_proxy_for_the_machine_does_not_hide_the_service(
+    profile: Path, tmp_path: Path, running
+) -> None:
+    """Behind a corporate proxy, loopback is still loopback.
+
+    Found running the installed app with every proxy pointed at a dead port:
+    the request for 127.0.0.1 went to the proxy, and the answer was a service
+    that did not exist -- the one answer the uninstaller must never get wrong.
+    """
+    running({"gravacao_ativa": True, "fila_pendente": 0}, tmp_path / "dados")
+    dead = "http://127.0.0.1:9"
+
+    code, answer = _status(profile, tmp_path / "dados",
+                           HTTP_PROXY=dead, HTTPS_PROXY=dead, ALL_PROXY=dead)
+
+    assert code == 0
+    assert answer["em_execucao"] is True
+    assert answer["gravacao_ativa"] is True
 
 
 def test_an_idle_service_is_running_and_not_recording(

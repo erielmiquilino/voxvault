@@ -320,6 +320,20 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if report.failed else 0
 
 
+def _loopback():
+    """An opener that never goes through a proxy.
+
+    The service listens on loopback. With ``HTTP_PROXY`` set for the machine
+    -- a corporate proxy, say -- a plain ``urlopen`` hands even a request for
+    127.0.0.1 to the proxy, which refuses it, and every command that talks to
+    the service would report a service that is not there: the uninstaller's
+    question among them, which would then miss a recording in progress.
+    """
+    import urllib.request
+
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _service_call(
     rendezvous, method: str, route: str, body: dict | None = None, *, timeout: float = 180
 ):
@@ -337,7 +351,7 @@ def _service_call(
     request.add_header(SECRET_HEADER, rendezvous.segredo)
     request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _loopback().open(request, timeout=timeout) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as exc:
         try:
@@ -1598,7 +1612,7 @@ def _stop_service(*, force: bool) -> int:
 
     detalhe = ""
     try:
-        with urllib.request.urlopen(request, timeout=10):
+        with _loopback().open(request, timeout=10):
             sys.stdout.write(f"Servico {found.pid} encerrando.\n")
             return 0
     except urllib.error.HTTPError as exc:
