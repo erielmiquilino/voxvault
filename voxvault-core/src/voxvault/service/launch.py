@@ -51,10 +51,13 @@ def ensure_running(*, timeout_s: float = STARTUP_TIMEOUT_S) -> Rendezvous:
 
     flags = 0
     if os.name == "nt":
-        # Detached so the service outlives the terminal that started it: a
-        # meeting recorded from a console that is later closed must still be
-        # finalized and transcribed.
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        # A console of its own, hidden, so the service outlives the terminal
+        # that started it: a meeting recorded from a console that is later
+        # closed must still be finalized and transcribed. Hidden rather than
+        # absent: with *no* console (DETACHED_PROCESS) the interpreter the venv
+        # launcher starts gets a new, visible one -- an empty terminal window
+        # whose closing kills the service, recording included.
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
 
     subprocess.Popen(
         [sys.executable, "-m", "voxvault.cli", "serve"],

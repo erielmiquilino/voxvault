@@ -498,11 +498,11 @@ pub fn log_path() -> PathBuf {
     paths::user_config_dir().join("servico.log")
 }
 
-/// Start the resident service, detached.
+/// Start the resident service, independent of this window.
 ///
-/// Detached on purpose: a service started as an ordinary child of this window
-/// would be torn down with it, which is precisely the failure the lifecycle
-/// requirement forbids -- the queue has to finish with the window closed.
+/// Independent on purpose: a service tied to this window would be torn down
+/// with it, which is precisely the failure the lifecycle requirement forbids --
+/// the queue has to finish with the window closed.
 ///
 /// Output goes to a log file rather than a pipe. A pipe nobody drains blocks
 /// the service once it fills, and the log is also what the app reads back to
@@ -536,9 +536,13 @@ fn spawn_service() -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        // A console of its own, hidden -- not none. With DETACHED_PROCESS the
+        // core's launcher has no console to hand down, so the interpreter it
+        // starts gets a new, visible one: an empty terminal window beside the
+        // app, and closing it kills the service, recording included.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     }
 
     let mut child = command
