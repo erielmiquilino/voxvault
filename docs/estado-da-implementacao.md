@@ -11,7 +11,7 @@ nas duas colunas. Onde não está, o motivo está dito.
 
 | | |
 |---|---|
-| Testes | 488 em Python e 7 em Rust, todos passando, inclusive os de hardware |
+| Testes | 531 em Python e 67 em Rust, todos passando, inclusive os de GPU; o CI roda os que não pedem áudio nem GPU |
 | Lint | `ruff` limpo em `src` e `tests` |
 | Código | 21.281 linhas de fonte entre núcleo e aplicativo, 8.331 de teste |
 | Subida da linha de comando | 213 ms |
@@ -279,24 +279,56 @@ repetidos ficavam todos presos em `IAudioClient::Initialize`. O serviço recusa
 agora um segundo início enquanto o primeiro abre os dispositivos, e o aplicativo
 não dispara outro enquanto um está em curso.
 
+### Gravando, com o aplicativo instalado
+
+Depois que o áudio voltou, no aplicativo instalado e recolhido na bandeja:
+
+- **Pelo menu.** Iniciar pela bandeja gravou em cerca de 1 s sem criar janela
+  nem processo do WebView2, com exatamente uma notificação de início; encerrar
+  trouxe exatamente uma de encerramento. Com a gravação ativa, o menu mostra
+  "Encerrar gravação" e "Pausar" habilitados.
+- **Por outra superfície.** `voxvault record` com o aplicativo na bandeja mudou
+  o tooltip para "gravando 00:00:02 · …" em 3,6 s, contra o teto de 5 s, e
+  gerou uma notificação de início; o relógio do tooltip avança a cada segundo.
+- **Pelo atalho em tela cheia.** Com uma janela em tela cheia e sempre no topo
+  à frente, Alt+Shift+R iniciou a gravação e, de novo, a encerrou, sem que a
+  janela do VoxVault aparecesse.
+- **Categoria desligada.** Sem "Gravação iniciada", iniciar não notificou, e o
+  encerramento continuou notificando.
+- **Sair durante a gravação.** A confirmação nativa mostra há quanto tempo se
+  grava; cancelar mantém a gravação e o aplicativo; confirmar encerra a
+  gravação de forma limpa, que vai para a fila e é transcrita pelo serviço com
+  o aplicativo já fechado, e o aplicativo sai em cerca de 1 s.
+
 ### Em aberto
 
-O serviço de áudio do Windows desta máquina caiu às 09:46 de 23/09 e, reiniciado
-pelo próprio sistema, passou a recusar a abertura de qualquer dispositivo, em
-qualquer processo (`0x80040154` e `0x800706CC`). Ficaram por verificar, até ele
-voltar: o início positivo pela bandeja e pelo atalho em tela cheia, a gravação
-iniciada por `voxvault record` mudando o ícone, os avisos de captura, a
-sugestão de reunião detectada com o botão "Gravar", a confirmação de "Sair"
-durante uma gravação e a medição de 60 minutos gravando na bandeja. O clique
-numa notificação não foi exercido pelo sistema, porque o "Não incomodar" estava
-ligado; a decisão que ele aciona foi separada numa função e testada.
+- **Avisos de captura** (microfone mudo pelo Windows) e a **medição de 60
+  minutos gravando na bandeja**: fazem parte de uma sessão de uma hora com o
+  usuário silenciando o microfone.
+- **A sugestão de reunião detectada** com o botão "Gravar": pedia uma chamada de
+  teste num aplicativo reconhecido, e ficou para depois, por decisão do usuário.
+- **O clique numa notificação** abrindo a reunião: a decisão que ele aciona foi
+  separada numa função e testada, e o clique pelo Windows depende de alguém
+  clicar.
+
+### O áudio que parou era o antivírus
+
+Das 09:46 às 14:10 de 23/09 nenhum processo desta máquina abria dispositivo de
+áudio — primeiro com `0x80040154`, depois, reiniciado o serviço de áudio, com
+fluxos que nunca armavam. A causa era a proteção de acesso ao microfone do
+Kaspersky, que segura o áudio de um processo "com restrições" até alguém
+responder ao aviso dela. Com as exclusões, todos os dispositivos voltaram a
+abrir. O ambiente instalado roda com outro `python.exe`, que pediu a mesma
+permissão na primeira gravação. O erro de fluxo que não arma agora aponta essa
+causa, e o README e as notas da release explicam o que fazer.
 
 ## Distribuição pública
 
-**Implementada; verificada até o instalador gerado. A instalação, o preparo
-completo e a publicação esperam decisão do usuário.** O instalador leva o
-núcleo e o `uv`, não Python: o preparo do primeiro uso monta o ambiente em
-`%USERPROFILE%\.voxvault\runtime` a partir do `uv.lock` versionado.
+**Implementada e verificada instalada, nesta máquina, de ponta a ponta.** O
+instalador leva o núcleo e o `uv`, não Python: o preparo do primeiro uso monta
+o ambiente em `%USERPROFILE%\.voxvault\runtime` a partir do `uv.lock`
+versionado. O repositório é público em `github.com/erielmiquilino/voxvault`,
+com o CI verde e a `main` protegida como a do `ia-monitor`.
 
 ### Verificado executando
 
@@ -366,15 +398,64 @@ monta uma cópia limpa do núcleo e mapeia a pasta.
 própria pasta, perdia a origem "padrão anterior" e, numa atualização,
 dispararia dois preparos seguidos.
 
+### Instalado, de ponta a ponta
+
+- **Instalação.** Silenciosa, por usuário, sem elevação: `%LOCALAPPDATA%\VoxVault`,
+  atalho no menu Iniciar com o AUMID `com.erielmiquilino.voxvault` — as
+  notificações do aplicativo instalado chegam por ele — e a entrada em
+  Programas.
+- **Primeiro uso, máquina limpa.** Com o perfil do VoxVault zerado e o `PATH`
+  só com as pastas do Windows: o preparo completo com GPU — interpretador,
+  dependências e CUDA, o modelo já presente na pasta anterior — em cerca de
+  1 minuto; um diálogo sintetizado em `.opus` importado, transcrito pelo
+  serviço com `large-v3` na GPU, achado pela busca e excluído; gravação pela
+  bandeja. Repetir o preparo com o carimbo alterado levou 2 s e não baixou nada.
+- **CPU.** Num perfil temporário com `VOXVAULT_FORCAR_CPU=1`: nenhum pacote da
+  NVIDIA no ambiente, o turbo escolhido, e a transcrição registrada como
+  `large-v3-turbo/cpu/int8`. Com todos os proxies numa porta morta, o preparo
+  parou em "Sem conexão com a internet: o preparo precisa baixar o
+  interpretador Python", com Retomar; retomado com rede, o progresso por etapa
+  mostrou os bytes ("639 KB de 275 MB" até "275 MB de 275 MB").
+- **Sem rede depois do preparo.** Com todos os proxies mortos: importação,
+  transcrição, busca sem acento, exclusão, e o servidor MCP instalado
+  respondendo a `buscar`, `criar_nota` e `listar_notas`.
+- **Atualização.** Da 0.1.0 para uma 0.1.1 de ensaio, com todos os proxies
+  mortos: ambiente, modelo, configuração e início com o Windows preservados, o
+  núcleo novo instalado no ambiente e a interface aberta em 7 s, sem download.
+- **Desinstalação.** Com uma gravação real em andamento, recusada com "Há uma
+  gravação em andamento no VoxVault. Encerre-a antes de desinstalar", nada
+  removido e a gravação seguindo. Sem gravação: `%USERPROFILE%\.voxvault`, o
+  valor `Run`, o atalho e a entrada em Programas removidos, o serviço parado,
+  e `D:\VoxVault` intacta.
+- **Publicação.** O ensaio por dispatch produz o instalador e o
+  `SHA256SUMS.txt` como artefatos, sem tag nem versão; a soma confere com o
+  arquivo baixado.
+
+### Quatro defeitos que só a instalação mostrou
+
+**O loopback passava pelo proxy.** Com `HTTP_PROXY` na máquina, o núcleo
+entregava ao proxy até a chamada para 127.0.0.1: `serve --status` dizia não
+haver serviço, e o desinstalador deixaria passar uma gravação em andamento.
+
+**A atualização parava o serviço pelo núcleo antigo.** O aplicativo novo pede a
+parada ao ambiente antigo, que tinha o defeito anterior; e toda falha de parada
+era dita como "está gravando". Os processos do núcleo recebem agora `NO_PROXY`
+com o loopback, e só a recusa de verdade é dita como gravação.
+
+**O núcleo novo não chegava ao ambiente.** O uv só percebe mudança num projeto
+local pelo `pyproject.toml`, e o instalador preserva as datas dos arquivos. A
+etapa de dependências reinstala agora o pacote do núcleo, e cada `sync` tenta
+primeiro pelo cache — sem isso, a atualização falhava offline revalidando no
+PyPI o *build backend* que já tinha.
+
+**A mensagem final da desinstalação não dizia a pasta.** A busca do gancho do
+instalador devolvia dois registradores trocados.
+
 ### Em aberto
 
-- **O preparo completo** num perfil temporário (tarefas 5.4, 5.5 e o progresso
-  da 6.1) e os testes de máquina limpa (10.1 a 10.3): o `uv` baixa e executa um
-  interpretador, e o antivírus desta máquina marcou esse tipo de comportamento
-  num ensaio do build.
-- **Instalar, desinstalar e atualizar** o aplicativo nesta máquina (7.2 a 7.4).
-- **Publicar:** o CI e a release por dispatch dependem do repositório no
-  GitHub, e cada ação pública espera confirmação (8.3, 8.4 e 11).
+- A mensagem final da desinstalação com a pasta de dados, depois da correção
+  do gancho, e o teste do instalador feito pelo CI (tarefas 7.3 e 11.3).
+- A tag `v0.1.0` e a release pública (11.4), que esperam confirmação.
 
 ## Decisões que valem ser lembradas
 
