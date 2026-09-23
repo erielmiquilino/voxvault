@@ -413,6 +413,7 @@
           motivo={gravacao.trilhas.mic.motivo}
           disponivel={gravacao.niveisVivos}
           silencioHaS={gravacao.trilhas.mic.silencioHaS}
+          ativo={!ocioso}
         />
         <Medidor
           rotulo="Sistema — o que sai pela saída"
@@ -421,6 +422,7 @@
           motivo={gravacao.trilhas.system.motivo}
           disponivel={gravacao.niveisVivos}
           silencioHaS={gravacao.trilhas.system.silencioHaS}
+          ativo={!ocioso}
         />
       </div>
       {#if ocioso}

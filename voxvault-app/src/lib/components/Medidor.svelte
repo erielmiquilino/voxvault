@@ -12,6 +12,7 @@
     motivo = null,
     disponivel = true,
     silencioHaS = 0,
+    ativo = true,
   }: {
     rotulo: string;
     nivel: number;
@@ -23,6 +24,10 @@
     disponivel?: boolean;
     /** Seconds this track has been silent, as the capture counts it. */
     silencioHaS?: number;
+    /** Whether a recording is in progress at all. With none, a track that is
+     *  not capturing is the expected state, and painting it as a failure made
+     *  a working setup look broken the first time it was opened. */
+    ativo?: boolean;
   } = $props();
 
   /** The threshold that separates a quiet room from a dead device. A meeting
@@ -44,7 +49,9 @@
 <div>
   <div class="linha" style="justify-content:space-between;margin-bottom:5px">
     <span style="font-weight:600;font-size:12.5px">{rotulo}</span>
-    {#if capturando}
+    {#if !ativo}
+      <span class="selo"><i class="ponto"></i>sem gravação</span>
+    {:else if capturando}
       <span class="selo ok"><i class="ponto"></i>capturando</span>
     {:else}
       <span class="selo erro"><i class="ponto"></i>não está capturando</span>
@@ -73,7 +80,7 @@
 
   {#if motivo}
     <p class="legenda" style="margin:5px 0 0">{motivo}</p>
-  {:else if !disponivel}
+  {:else if !disponivel && ativo}
     <p class="legenda" style="margin:5px 0 0">
       Nível indisponível: nada está publicando a medição desta trilha. A barra
       vazia aqui não significa microfone mudo.
