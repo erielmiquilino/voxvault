@@ -64,7 +64,7 @@
 
 ## 11. Publicação da 0.1.0 (cada ação só com confirmação explícita do usuário no momento)
 
-- [ ] 11.1 Com confirmação, criar `erielmiquilino/voxvault` público com descrição e tópicos, e enviar a `main` com o histórico completo; verificar pela API que o repositório existe, público, com todos os commits.
+- [x] 11.1 Com confirmação, criar `erielmiquilino/voxvault` público com descrição e tópicos, e enviar a `main` com o histórico completo; verificar pela API que o repositório existe, público, com todos os commits.
 - [ ] 11.2 Esperar o CI verde na `main` e, com confirmação, aplicar a proteção igual à do `ia-monitor`; verificar lendo a proteção pela API: PR obrigatório, check `testes`, admin sem trava, sem force push nem exclusão.
 - [ ] 11.3 Rodar o ensaio da release por dispatch e repetir o teste do instalador com o artefato dele; verificar os critérios de 10.1.
 - [ ] 11.4 Com confirmação, criar e enviar a tag `v0.1.0`; verificar que a release "VoxVault 0.1.0" existe com `VoxVault-0.1.0-setup.exe` e `SHA256SUMS.txt`, que a soma confere com o arquivo baixado e que as notas trazem o texto permanente.

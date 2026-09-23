@@ -21,7 +21,7 @@ Nenhuma.
 
 ### Modified Capabilities
 
-- `tray-and-hotkeys`: "Ícone de bandeja com estado", "Ações rápidas pela bandeja", "Atalho global de teclado", "Fechamento para a bandeja", "Notificações do sistema" e "Início junto com o sistema" são reescritos com as decisões desta mudança.
+- `tray-and-hotkeys`: "Ícone de bandeja com estado", "Ações rápidas pela bandeja", "Atalho global de teclado", "Notificações do sistema" e "Início junto com o sistema" são reescritos com as decisões desta mudança; "Fechamento para a bandeja", que descrevia um fechamento configurável, é removido e substituído por "Recolhimento para a bandeja".
 - `desktop-shell`: "Instância única" passa a recriar a janela recolhida; "Custo desprezível durante a gravação" ganha limites para o aplicativo recolhido na bandeja, com e sem gravação.
 
 A detecção de reunião (`meeting-autodetect`) não muda de requisito: a notificação com acionamento único para gravar já é o especificado, e esta mudança é o que a torna possível com a janela fechada.

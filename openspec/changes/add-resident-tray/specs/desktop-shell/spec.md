@@ -49,9 +49,9 @@ Este requisito existe porque a lentidão de ferramentas equivalentes durante a r
 - **AND** a memória residente somada permanece em no máximo 700 MB
 - **AND** nenhuma transcrição é executada durante o período
 
-#### Scenario: Aplicativo recolhido na bandeja durante a gravação
+#### Scenario: Janela minimizada durante a gravação
 
-- **WHEN** o aplicativo é recolhido para a bandeja durante uma gravação e o consumo é medido ao longo de 60 minutos
+- **WHEN** a janela é minimizada ou fechada durante uma gravação, o que recolhe o aplicativo para a bandeja, e o consumo é medido ao longo de 60 minutos
 - **THEN** a gravação continua sem interrupção
 - **AND** a memória residente somada permanece em no máximo 250 MB
 - **AND** o uso de processador não aumenta em relação à janela aberta

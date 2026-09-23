@@ -124,42 +124,6 @@ Cada acionamento do atalho SHALL produzir uma confirmação perceptível, já qu
 - **AND** o anterior deixa de responder
 - **AND** o novo continua valendo depois que o aplicativo é reiniciado
 
-### Requirement: Fechamento para a bandeja
-
-Fechar a janela principal, pelo botão de fechar ou pelo atalho de fechar janela do sistema, e minimizá-la SHALL recolher o aplicativo para a bandeja, sem encerrá-lo, sem interromper uma gravação em andamento e sem pedir confirmação.
-
-Ao recolher, a interface SHALL ser descarregada da memória, restando apenas o ícone de bandeja e o serviço local, e MUST NOT permanecer botão do aplicativo na barra de tarefas.
-
-Na primeira vez que o aplicativo for recolhido, o sistema SHALL emitir uma notificação informando que o VoxVault continua em execução na bandeja e como encerrá-lo. Esse aviso MUST NOT se repetir, inclusive depois de reinícios.
-
-O encerramento do aplicativo SHALL acontecer apenas pelo item de encerrar do menu da bandeja, ou por encerramento da sessão ou desligamento do sistema operacional.
-
-Reabrir a janela — pela bandeja, por uma nova execução do aplicativo ou pelo acionamento de uma notificação — SHALL restaurar a última tela vista, e a janela SHALL estar utilizável em até 2 segundos.
-
-#### Scenario: Janela fechada durante uma gravação
-
-- **WHEN** o usuário fecha a janela durante uma gravação
-- **THEN** o aplicativo é recolhido para a bandeja
-- **AND** a gravação continua sem interrupção e sem pedir confirmação
-
-#### Scenario: Janela minimizada
-
-- **WHEN** o usuário minimiza a janela
-- **THEN** o aplicativo é recolhido para a bandeja
-- **AND** nenhum botão do aplicativo permanece na barra de tarefas
-
-#### Scenario: Primeiro recolhimento
-
-- **WHEN** o aplicativo é recolhido para a bandeja pela primeira vez
-- **THEN** uma notificação explica que ele continua em execução e como encerrá-lo
-- **AND** nos recolhimentos seguintes, inclusive depois de reiniciar, a notificação não se repete
-
-#### Scenario: Reabertura na última tela
-
-- **WHEN** o usuário reabre a janela depois de recolhê-la com uma reunião aberta
-- **THEN** a janela volta mostrando a mesma reunião
-- **AND** está utilizável em até 2 segundos
-
 ### Requirement: Notificações do sistema
 
 O aplicativo SHALL emitir notificações do sistema, funcionando também com a janela principal fechada, nas categorias: gravação iniciada, gravação encerrada, transcrição concluída, transcrição falha, avisos de captura durante a gravação e reunião detectada.
@@ -231,3 +195,49 @@ Desativar o início automático SHALL remover o registro de inicialização do s
 - **WHEN** o usuário desativa o início automático e reinicia o sistema
 - **THEN** o aplicativo não é iniciado
 - **AND** nenhum registro de inicialização do VoxVault permanece no sistema operacional
+
+## ADDED Requirements
+
+### Requirement: Recolhimento para a bandeja
+
+Fechar a janela principal, pelo botão de fechar ou pelo atalho de fechar janela do sistema, e minimizá-la SHALL recolher o aplicativo para a bandeja, sem encerrá-lo, sem interromper uma gravação em andamento e sem pedir confirmação.
+
+Ao recolher, a interface SHALL ser descarregada da memória, restando apenas o ícone de bandeja e o serviço local, e MUST NOT permanecer botão do aplicativo na barra de tarefas.
+
+Na primeira vez que o aplicativo for recolhido, o sistema SHALL emitir uma notificação informando que o VoxVault continua em execução na bandeja e como encerrá-lo. Esse aviso MUST NOT se repetir, inclusive depois de reinícios.
+
+O encerramento do aplicativo SHALL acontecer apenas pelo item de encerrar do menu da bandeja, ou por encerramento da sessão ou desligamento do sistema operacional.
+
+Reabrir a janela — pela bandeja, por uma nova execução do aplicativo ou pelo acionamento de uma notificação — SHALL restaurar a última tela vista, e a janela SHALL estar utilizável em até 2 segundos.
+
+#### Scenario: Janela fechada durante uma gravação
+
+- **WHEN** o usuário fecha a janela durante uma gravação
+- **THEN** o aplicativo é recolhido para a bandeja
+- **AND** a gravação continua sem interrupção e sem pedir confirmação
+
+#### Scenario: Janela minimizada
+
+- **WHEN** o usuário minimiza a janela
+- **THEN** o aplicativo é recolhido para a bandeja
+- **AND** nenhum botão do aplicativo permanece na barra de tarefas
+
+#### Scenario: Primeiro recolhimento
+
+- **WHEN** o aplicativo é recolhido para a bandeja pela primeira vez
+- **THEN** uma notificação explica que ele continua em execução e como encerrá-lo
+- **AND** nos recolhimentos seguintes, inclusive depois de reiniciar, a notificação não se repete
+
+#### Scenario: Reabertura na última tela
+
+- **WHEN** o usuário reabre a janela depois de recolhê-la com uma reunião aberta
+- **THEN** a janela volta mostrando a mesma reunião
+- **AND** está utilizável em até 2 segundos
+
+## REMOVED Requirements
+
+### Requirement: Fechamento para a bandeja
+
+**Reason**: O fechamento deixou de ser configurável. Com o aplicativo residente, fechar e minimizar sempre recolhem para a bandeja, e encerrar é uma ação própria do menu da bandeja; os cenários de "recolhimento configurado" e "encerramento configurado" descrevem uma escolha que não existe mais.
+
+**Migration**: O comportamento passa a ser o do requisito "Recolhimento para a bandeja". Quem configurava o fechamento para encerrar usa "Sair do VoxVault" no menu da bandeja.
