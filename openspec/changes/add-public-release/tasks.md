@@ -37,14 +37,14 @@
 - [x] 7.1 Configurar `bundle.resources`, `installMode: "currentUser"` e `installerHooks` no `tauri.conf.json`; verificar que o instalador gerado tem no máximo 40 MB e que a pasta instalada contém `recursos\nucleo` só com `.py`, pyproject, lock, README e LICENSE, além de `recursos\uv\uv.exe` e `preparo.json`.
 - [x] 7.2 Conferir no `installer.nsi` gerado a variável de modo de atualização e o AUMID do atalho do menu Iniciar; implementar `windows/ganchos.nsh` (decisão 10), definindo o AUMID no pós-instalação se o modelo do Tauri não o fizer; verificar que uma notificação do aplicativo instalado aparece com o nome VoxVault.
 - [ ] 7.3 Verificar a desinstalação: com uma gravação ativa é recusada com a mensagem; sem gravação, remove `%USERPROFILE%\.voxvault` e o valor de `Run`, mantém a pasta de dados intacta e informa onde ela está.
-- [ ] 7.4 Verificar a atualização: instalar a 0.1.0, preparar, instalar uma 0.1.1 de ensaio gerada localmente, e confirmar que o ambiente, o modelo e o início automático sobrevivem e que o aplicativo abre sem baixar nada.
+- [x] 7.4 Verificar a atualização: instalar a 0.1.0, preparar, instalar uma 0.1.1 de ensaio gerada localmente, e confirmar que o ambiente, o modelo e o início automático sobrevivem e que o aplicativo abre sem baixar nada.
 
 ## 8. CI e release
 
 - [x] 8.1 Criar `tools/preparar-recursos.ps1` (download do uv fixado em `recursos.json`, conferência da soma, extração, geração de `preparo.json` pelo `gerar-manifesto-preparo.py`) ligado ao `beforeBuildCommand`; verificar que uma soma adulterada interrompe o build nomeando o uv e que a correta produz os recursos.
 - [x] 8.2 Criar `tools/conferir-versao.ps1`; verificar que `v0.1.0` passa e que `v0.2.0` falha nomeando os cinco componentes divergentes.
 - [x] 8.3 Criar `.github/workflows/ci.yml` com o job `testes` da decisão 12 e corrigir o que o `clippy -D warnings` e o `pytest` fora desta máquina revelarem; verificar com o workflow verde num fork ou branch de teste antes da publicação.
-- [ ] 8.4 Criar `.github/workflows/release.yml` com conferência, testes, build, `SHA256SUMS.txt`, ensaio por dispatch e publicação por tag; verificar com um dispatch que produz os artefatos sem criar release.
+- [x] 8.4 Criar `.github/workflows/release.yml` com conferência, testes, build, `SHA256SUMS.txt`, ensaio por dispatch e publicação por tag; verificar com um dispatch que produz os artefatos sem criar release.
 - [x] 8.5 Tirar `voxvault-app/src-tauri/.cargo/config.toml` do índice e incluí-lo no `.gitignore`, mantendo o arquivo local; verificar que `git ls-files` não o lista e que o build local continua indo para `D:/VoxVault-build`.
 
 ## 9. Repositório

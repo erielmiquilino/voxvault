@@ -266,6 +266,30 @@ impl DataDirSource {
     }
 }
 
+/// `NO_PROXY` with loopback added, for every core process this app starts.
+///
+/// The core talks to its own service over 127.0.0.1, and Python's HTTP client
+/// hands even that to a proxy configured for the machine -- which refuses it,
+/// so the command reports a service that is not there. The core no longer
+/// does that, but an older core still in place during an update does, and the
+/// app is what asks it to stop.
+pub fn sem_proxy_no_loopback() -> String {
+    let atual = env::var("NO_PROXY")
+        .or_else(|_| env::var("no_proxy"))
+        .unwrap_or_default();
+    let mut itens: Vec<String> = atual
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    for local in ["127.0.0.1", "localhost", "::1"] {
+        if !itens.iter().any(|item| item.eq_ignore_ascii_case(local)) {
+            itens.push(local.to_string());
+        }
+    }
+    itens.join(",")
+}
+
 pub fn recordings_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("recordings")
 }
@@ -299,6 +323,14 @@ mod testes {
         let exe = scripts.join("voxvault.exe");
         std::fs::write(&exe, b"").unwrap();
         exe
+    }
+
+    #[test]
+    fn o_loopback_nunca_passa_pelo_proxy() {
+        let valor = sem_proxy_no_loopback();
+        for local in ["127.0.0.1", "localhost", "::1"] {
+            assert!(valor.split(',').any(|item| item == local), "{valor}");
+        }
     }
 
     #[test]

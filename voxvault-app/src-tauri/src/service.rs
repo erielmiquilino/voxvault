@@ -590,6 +590,8 @@ fn spawn_service() -> Result<(), String> {
         .arg("serve")
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
+        .env("NO_PROXY", paths::sem_proxy_no_loopback())
+        .env("no_proxy", paths::sem_proxy_no_loopback())
         .stdin(Stdio::null())
         .stdout(sink())
         .stderr(sink());

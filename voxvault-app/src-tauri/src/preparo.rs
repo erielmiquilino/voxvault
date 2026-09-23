@@ -566,6 +566,8 @@ fn comando_do_nucleo(runtime: &Path) -> Result<Command, FalhaDoPreparo> {
         .env("HF_HOME", runtime.join("hf"))
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
+        .env("NO_PROXY", paths::sem_proxy_no_loopback())
+        .env("no_proxy", paths::sem_proxy_no_loopback())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -956,6 +958,10 @@ fn parar_o_servico_do_ambiente(app: &AppHandle, runtime: &Path) -> Result<(), Fa
         .args(["serve", "--stop"])
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
+        // The environment being replaced may carry an older core, one that
+        // still sent its loopback requests to the machine's proxy.
+        .env("NO_PROXY", paths::sem_proxy_no_loopback())
+        .env("no_proxy", paths::sem_proxy_no_loopback())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -967,15 +973,29 @@ fn parar_o_servico_do_ambiente(app: &AppHandle, runtime: &Path) -> Result<(), Fa
     let (ok, saida) = executar(app, "dependencias", comando, None, |_| {})
         .map_err(|err| causa("dependencias", "o serviço local", &err))?;
     if !ok {
-        return Err(FalhaDoPreparo {
-            etapa: "dependencias".into(),
-            mensagem: format!(
-                "O serviço local está gravando ou transcrevendo, e o ambiente só é \
-                 atualizado com ele parado. {}",
-                saida.lines().next().unwrap_or("").trim()
-            ),
-            acao: "Encerre a gravação pela bandeja ou espere a fila esvaziar, e clique em Retomar."
-                .into(),
+        let detalhe = saida.lines().next().unwrap_or("").trim().to_string();
+        // The service refusing is the only answer that points at --force: it
+        // is protecting a recording or a queue. Anything else is a stop that
+        // did not happen, and saying "it is recording" would be a lie.
+        return Err(if saida.contains("--force") {
+            FalhaDoPreparo {
+                etapa: "dependencias".into(),
+                mensagem: format!(
+                    "O serviço local está gravando ou transcrevendo, e o ambiente só é \
+                     atualizado com ele parado. {detalhe}"
+                ),
+                acao: "Encerre a gravação pela bandeja ou espere a fila esvaziar, e clique em Retomar."
+                    .into(),
+            }
+        } else {
+            FalhaDoPreparo {
+                etapa: "dependencias".into(),
+                mensagem: format!(
+                    "O serviço local não pôde ser parado para atualizar o ambiente: {detalhe}"
+                ),
+                acao: "Clique em Retomar. Se a falha se repetir, reinicie o computador e abra o VoxVault."
+                    .into(),
+            }
         });
     }
     // It answers before it is gone; the files are free only once it is.
