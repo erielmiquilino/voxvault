@@ -25,14 +25,19 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Already in the tree through Tauri; taken directly only for the free-space
-# query, which has no portable standard-library equivalent.
+# Already in the tree through Tauri; taken directly for what the standard
+# library has no portable equivalent of: free space, the process's memory, and
+# the `voxvault:` scheme a notification's click opens.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
     "Win32_System_Threading",
 ] }
-tauri-winrt-notification = "0.8"
+# The notifications, built as XML so that a click opens an address: the
+# wrapper crate only calls back into the process, which a click in the
+# notification center never reaches. Already in the tree through Tauri.
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications"] }
 tauri-plugin-autostart = "2"
 
 [profile.release]

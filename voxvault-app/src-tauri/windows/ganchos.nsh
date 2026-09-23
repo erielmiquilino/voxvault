@@ -121,6 +121,8 @@ FunctionEnd
     ${If} $2 <> 0
       RMDir /r /REBOOTOK "$PROFILE\.voxvault"
     ${EndIf}
+    ; The address a notification's click opens, which the app registers.
+    DeleteRegKey HKCU "Software\Classes\voxvault"
     ; The embedded browser's cache: nothing of the user's is in it.
     RMDir /r "$LOCALAPPDATA\${BUNDLEID}"
     RMDir /r "$INSTDIR\${MAINBINARYNAME}.exe.WebView2"

@@ -13,6 +13,7 @@
 //! interpreter start -- and it wakes the window only when the picture changed.
 
 mod atalho;
+mod ativacao;
 mod avisos;
 mod cli;
 mod commands;
@@ -56,9 +57,13 @@ pub fn run() {
     tauri::Builder::default()
         // Registered first, as the plugin requires: a second launch has to be
         // intercepted before this process builds a window of its own. With the
-        // app in the tray, the window is built again on the last route.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            janela::abrir(app, None);
+        // app in the tray, the window is built again on the last route -- or
+        // on the one a clicked notification's address names.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            match args.iter().find_map(|arg| ativacao::interpretar(arg)) {
+                Some(pedido) => avisos::atender(app, pedido),
+                None => janela::abrir(app, None),
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -148,9 +153,18 @@ pub fn run() {
             supervisionar(handle.clone());
             harness::iniciar(handle.clone());
 
+            // A notification clicked after the app was quit starts it with its
+            // address.
+            if let Err(erro) = ativacao::registrar_esquema() {
+                eprintln!("o clique nas notificações não abrirá o aplicativo: {erro}");
+            }
+            let pedido = std::env::args().find_map(|arg| ativacao::interpretar(&arg));
+
             // Started with Windows: the tray only, and no recording -- that is
             // always a person's decision.
-            if !std::env::args().any(|arg| arg == ARGUMENTO_BANDEJA) {
+            if let Some(pedido) = pedido {
+                avisos::atender(&handle, pedido);
+            } else if !std::env::args().any(|arg| arg == ARGUMENTO_BANDEJA) {
                 janela::construir(&handle)?;
             }
             Ok(())

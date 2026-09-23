@@ -21,14 +21,17 @@
 //! - meeting detected: `/deteccao` starting to report one.
 //!
 //! Toasts go through WinRT directly because the button is required and the
-//! official notification plugin has no action buttons on desktop.
+//! official notification plugin has no action buttons on desktop. Clicking
+//! one opens a `voxvault://` address rather than calling back into this
+//! process, which is the only way a click in the notification center reaches
+//! it; see [`crate::ativacao`].
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
-use tauri_winrt_notification::{Duration as Duracao, Toast};
 
+use crate::ativacao::{self, Pedido};
 use crate::janela;
 use crate::prefs::Notificacoes;
 use crate::residente::Residente;
@@ -38,6 +41,10 @@ use crate::tray::{self, EstadoDaBandeja};
 /// The application's identity for Windows, registered by the Start menu
 /// shortcut the installer creates.
 const AUMID: &str = "com.erielmiquilino.voxvault";
+/// PowerShell's identity, registered on every Windows: the one a toast can use
+/// from a build folder, where no shortcut registers the application's own.
+const AUMID_DO_POWERSHELL: &str =
+    r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe";
 /// Microphone silence that becomes a warning.
 const SILENCIO_S: f64 = 60.0;
 /// How long a "meeting detected" suggestion stays a suggestion. After that,
@@ -494,7 +501,7 @@ pub fn identidade() -> &'static str {
         if atalho(std::env::var_os("APPDATA")) || atalho(std::env::var_os("ProgramData")) {
             AUMID
         } else {
-            Toast::POWERSHELL_APP_ID
+            AUMID_DO_POWERSHELL
         }
     })
 }
@@ -513,24 +520,74 @@ pub fn mostrar(app: &AppHandle, aviso: Aviso) {
             return;
         }
     }
-    let emitido_em = Instant::now();
-    let para_o_clique = app.clone();
-    let destino = aviso.destino.clone();
-    let gravar = aviso.gravar;
-    let mut toast = Toast::new(identidade())
-        .title(&aviso.titulo)
-        .text1(&aviso.texto)
-        .duration(if gravar { Duracao::Long } else { Duracao::Short })
-        .on_activated(move |acao| {
-            acionada(&para_o_clique, &destino, gravar, acao.as_deref(), emitido_em);
-            Ok(())
-        });
-    if gravar {
-        toast = toast.add_button("Gravar", "gravar");
-    }
-    if let Err(erro) = toast.show() {
+    let lancamento = ativacao::endereco_para(&aviso.destino);
+    let botao = aviso
+        .gravar
+        .then(|| ativacao::endereco_para_gravar(&ativacao::emitir_token(Instant::now())));
+    let xml = xml_do_aviso(&aviso, lancamento.as_deref(), botao.as_deref());
+    if let Err(erro) = exibir(&xml) {
         eprintln!("notificação não exibida ({}): {erro}", aviso.titulo);
     }
+}
+
+/// The toast, as the XML Windows reads. A click on it opens `lancamento`, and
+/// the "Gravar" button, `botao`; with neither, clicking only dismisses it.
+pub fn xml_do_aviso(aviso: &Aviso, lancamento: Option<&str>, botao: Option<&str>) -> String {
+    let mut xml = String::from("<toast");
+    if let Some(endereco) = lancamento {
+        xml.push_str(&format!(
+            " activationType=\"protocol\" launch=\"{}\"",
+            escapar(endereco)
+        ));
+    }
+    xml.push_str(if aviso.gravar {
+        " duration=\"long\">"
+    } else {
+        " duration=\"short\">"
+    });
+    xml.push_str(&format!(
+        "<visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text>\
+         </binding></visual>",
+        escapar(&aviso.titulo),
+        escapar(&aviso.texto)
+    ));
+    if let Some(endereco) = botao {
+        xml.push_str(&format!(
+            "<actions><action content=\"Gravar\" activationType=\"protocol\" \
+             arguments=\"{}\"/></actions>",
+            escapar(endereco)
+        ));
+    }
+    xml.push_str("</toast>");
+    xml
+}
+
+/// Titles come from people -- a meeting can be called anything.
+fn escapar(texto: &str) -> String {
+    let mut saida = String::with_capacity(texto.len());
+    for c in texto.chars() {
+        match c {
+            '&' => saida.push_str("&amp;"),
+            '<' => saida.push_str("&lt;"),
+            '>' => saida.push_str("&gt;"),
+            '"' => saida.push_str("&quot;"),
+            '\'' => saida.push_str("&apos;"),
+            _ => saida.push(c),
+        }
+    }
+    saida
+}
+
+fn exibir(xml: &str) -> windows::core::Result<()> {
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+    use windows::core::HSTRING;
+
+    let documento = XmlDocument::new()?;
+    documento.LoadXml(&HSTRING::from(xml))?;
+    let toast = ToastNotification::CreateToastNotification(&documento)?;
+    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(identidade()))?
+        .Show(&toast)
 }
 
 /// What acting on a notification does, decided apart from doing it.
@@ -564,9 +621,19 @@ pub fn resposta_ao_acionamento(
     }
 }
 
-fn acionada(app: &AppHandle, destino: &Destino, gravar: bool, acao: Option<&str>, emitido_em: Instant) {
+/// What an address opened from a notification asks for, done. A "Gravar"
+/// whose token this process did not issue, or issued too long ago, only opens
+/// the window.
+pub fn atender(app: &AppHandle, pedido: Pedido) {
+    let resposta = match pedido {
+        Pedido::Abrir(rota) => Resposta::Abrir(rota),
+        Pedido::Gravar(token) => {
+            let decorrido = ativacao::resgatar_token(&token, Instant::now())
+                .unwrap_or(Duration::MAX);
+            resposta_ao_acionamento(&Destino::Gravacao, true, Some("gravar"), decorrido)
+        }
+    };
     let app = app.clone();
-    let resposta = resposta_ao_acionamento(destino, gravar, acao, emitido_em.elapsed());
     std::thread::spawn(move || match resposta {
         Resposta::Gravar => {
             if !app.state::<Residente>().cliente.gravando() {
@@ -772,5 +839,63 @@ mod testes {
         assert!(!Categoria::GravacaoIniciada.permitida(&chaves));
         assert!(Categoria::GravacaoEncerrada.permitida(&chaves));
         assert_eq!(Categoria::de_nome("reuniao_detectada"), Some(Categoria::ReuniaoDetectada));
+    }
+
+    fn concluida(titulo: &str) -> Aviso {
+        Aviso::de(
+            Categoria::TranscricaoConcluida,
+            "concluida:r1".into(),
+            "Transcrição concluída",
+            format!("{titulo} — pronta para ler e buscar."),
+            Destino::Reuniao("6cced371a4c94f37821dff011e80893a".into()),
+        )
+    }
+
+    #[test]
+    fn o_clique_abre_o_endereco_da_reuniao() {
+        let aviso = concluida("Planejamento");
+        let endereco = ativacao::endereco_para(&aviso.destino);
+        let xml = xml_do_aviso(&aviso, endereco.as_deref(), None);
+        assert!(xml.starts_with(
+            "<toast activationType=\"protocol\" \
+             launch=\"voxvault://abrir/biblioteca/6cced371a4c94f37821dff011e80893a\""
+        ));
+        assert!(!xml.contains("<actions>"));
+    }
+
+    #[test]
+    fn o_que_nao_leva_a_lugar_algum_nao_tem_endereco() {
+        let aviso = Aviso::bandeja();
+        let xml = xml_do_aviso(&aviso, ativacao::endereco_para(&aviso.destino).as_deref(), None);
+        assert!(!xml.contains("activationType"), "{xml}");
+        assert!(!xml.contains("launch="), "{xml}");
+    }
+
+    #[test]
+    fn gravar_e_um_botao_com_o_seu_proprio_endereco() {
+        let aviso = Aviso::exemplo(Categoria::ReuniaoDetectada);
+        let botao = ativacao::endereco_para_gravar("0123456789abcdef0123456789abcdef");
+        let xml = xml_do_aviso(&aviso, ativacao::endereco_para(&aviso.destino).as_deref(), Some(&botao));
+        assert!(xml.contains(
+            "<action content=\"Gravar\" activationType=\"protocol\" \
+             arguments=\"voxvault://gravar/0123456789abcdef0123456789abcdef\"/>"
+        ));
+        assert!(xml.contains("duration=\"long\""));
+    }
+
+    #[test]
+    fn um_titulo_qualquer_ainda_e_um_xml_que_o_windows_le() {
+        use windows::Data::Xml::Dom::XmlDocument;
+        use windows::core::HSTRING;
+
+        let aviso = concluida("Q&A <interno> \"sócios\" d'água");
+        let xml = xml_do_aviso(&aviso, ativacao::endereco_para(&aviso.destino).as_deref(), None);
+        let documento = XmlDocument::new().unwrap();
+        documento.LoadXml(&HSTRING::from(&xml)).expect(&xml);
+        let textos = documento.GetElementsByTagName(&HSTRING::from("text")).unwrap();
+        assert_eq!(
+            textos.Item(1).unwrap().InnerText().unwrap().to_string(),
+            "Q&A <interno> \"sócios\" d'água — pronta para ler e buscar."
+        );
     }
 }
