@@ -57,7 +57,7 @@
 
 ## 10. Verificação ponta a ponta
 
-- [ ] 10.1 Máquina limpa simulada, GPU: instalar o artefato do ensaio e executar com `USERPROFILE` vazio e `PATH` sem Python e ffmpeg (decisão 15); verificar preparo completo, gravação, transcrição, importação `.opus`, exclusão e bandeja funcionando.
+- [x] 10.1 Máquina limpa simulada, GPU: instalar o artefato do ensaio e executar com `USERPROFILE` vazio e `PATH` sem Python e ffmpeg (decisão 15); verificar preparo completo, gravação, transcrição, importação `.opus`, exclusão e bandeja funcionando.
 - [x] 10.2 Máquina limpa simulada, CPU: repetir com `VOXVAULT_FORCAR_CPU=1`; verificar que nada de CUDA é baixado, que o modelo é o turbo e que a transcrição registra CPU e `int8`.
 - [ ] 10.3 Sem rede depois do preparo: repetir gravação, transcrição, busca e consulta pelo servidor MCP com `HTTPS_PROXY` e `HTTP_PROXY` apontando para uma porta morta; verificar que tudo funciona.
 - [ ] 10.4 Atualizar `docs/estado-da-implementacao.md` com a distribuição e as verificações; verificar que cita cada item desta seção com o resultado.
@@ -66,5 +66,5 @@
 
 - [x] 11.1 Com confirmação, criar `erielmiquilino/voxvault` público com descrição e tópicos, e enviar a `main` com o histórico completo; verificar pela API que o repositório existe, público, com todos os commits.
 - [x] 11.2 Esperar o CI verde na `main` e, com confirmação, aplicar a proteção igual à do `ia-monitor`; verificar lendo a proteção pela API: PR obrigatório, check `testes`, admin sem trava, sem force push nem exclusão.
-- [ ] 11.3 Rodar o ensaio da release por dispatch e repetir o teste do instalador com o artefato dele; verificar os critérios de 10.1.
+- [x] 11.3 Rodar o ensaio da release por dispatch e repetir o teste do instalador com o artefato dele; verificar os critérios de 10.1.
 - [ ] 11.4 Com confirmação, criar e enviar a tag `v0.1.0`; verificar que a release "VoxVault 0.1.0" existe com `VoxVault-0.1.0-setup.exe` e `SHA256SUMS.txt`, que a soma confere com o arquivo baixado e que as notas trazem o texto permanente.
