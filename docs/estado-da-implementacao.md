@@ -11,7 +11,7 @@ nas duas colunas. Onde não está, o motivo está dito.
 
 | | |
 |---|---|
-| Testes | 436 em Python e 5 em Rust, todos passando; 9 pulados (exigem hardware ausente agora) |
+| Testes | 456 em Python e 5 em Rust, todos passando, inclusive os de hardware |
 | Lint | `ruff` limpo em `src` e `tests` |
 | Código | 21.281 linhas de fonte entre núcleo e aplicativo, 8.331 de teste |
 | Subida da linha de comando | 213 ms |
@@ -34,9 +34,9 @@ sintetizada é mais limpa que fala humana. As degradações testaram robustez de
 *canal*, não de *falante*. O veredito definitivo vem da primeira reunião real.
 Detalhes em [avaliacao-fase-0.md](avaliacao-fase-0.md).
 
-**Em aberto:** as tarefas marcadas `(usuário)` — fornecer áudio de reunião real
-e decidir entre local e provedor online. A bancada está pronta para rodar sobre
-esse material assim que existir.
+**Em aberto:** o veredito de qualidade e a escolha entre local e provedor
+online, que são do usuário. O áudio de reunião real que faltava agora existe —
+ver [A primeira reunião real](#a-primeira-reunião-real).
 
 ## Fase 1 — núcleo de gravação
 
@@ -59,15 +59,16 @@ esse material assim que existir.
 
 ### Implementado e coberto por teste, sem verificação em hardware
 
-A máquina passou a recusar abrir qualquer dispositivo de áudio
-(`REGDB_E_CLASSNOTREG`) durante o trabalho. Os dispositivos aparecem na
-enumeração e não abrem — estado do serviço de áudio do Windows, não do VoxVault.
+Durante parte do trabalho a máquina recusou abrir qualquer dispositivo de áudio
+(`REGDB_E_CLASSNOTREG`) — estado do serviço de áudio do Windows, não do
+VoxVault. Passou: uma reunião real de 39 minutos foi gravada depois disso.
 
-Ficaram sem verificação ao vivo:
+Continuam sem verificação ao vivo, porque exigem alguém agindo na máquina:
 
 - migração de trilha ao trocar o dispositivo padrão no meio da gravação
-  (12 testes com dispositivos falsos cobrem a lógica inteira);
-- reação à perda de dispositivo e o encerramento de trilha como incompleta;
+  (os testes com dispositivos falsos cobrem a lógica inteira);
+- reação à perda de dispositivo — desligar e religar o Bluetooth com a versão
+  atual gravando — e o encerramento de trilha como incompleta;
 - suspensão real do sistema operacional com gravação ativa.
 
 ### Dois defeitos encontrados medindo, não lendo
@@ -192,11 +193,108 @@ Vale registrar como foi encontrado: nenhum teste unitário o pegaria, porque
 cada peça estava certa isolada. Apareceu porque duas superfícies discordaram
 sobre o mesmo fato.
 
+## A primeira reunião real
+
+Uma reunião de 39 minutos no Teams, com fone Bluetooth JBL Tune Flex 2, gravada
+e transcrita: 890 segmentos, cada fala atribuída a `você` ou `outros` pela
+trilha de onde veio.
+
+**O que deu errado e era do VoxVault.** O serviço residente tinha se encerrado
+por ociosidade, e `record` caiu num caminho de gravação direto, anterior ao
+serviço e sem supervisor de dispositivo. Quando o fone saiu do ar, as duas
+trilhas morreram sem aviso e o contador ficou parado por três horas e meia. O
+caminho direto foi removido: `record` grava sempre pelo serviço, e sobe um se
+não houver.
+
+**O alarme de divergência era falso.** Media a diferença de comprimento entre as
+trilhas, e um loopback ocioso — ninguém falando, nada tocando — não entrega
+pacote algum. Isso aparecia como desalinhamento crescente, a cada segundo de
+silêncio. Agora mede quanto cada trilha se afasta do relógio do sistema; ao
+vivo, na mesma máquina, deu 0 ms.
+
+**O que deu errado e não era do VoxVault.** Por volta dos 38:20 o som parou de
+chegar ao ouvido de quem gravava. A mensagem do commit `5823ed4` atribui isso à bateria do
+fone, e está errada: o fone continuava ligado, e foi preciso desligar e religar
+o Bluetooth. A própria gravação mostra onde o som se perdeu:
+
+- a trilha do sistema, que é o que o Windows entrega ao fone, tem a voz dos
+  outros o tempo todo — inclusive o "alô, tá ouvindo?" que não chegou ao ouvido;
+- a trilha do microfone continuou com a voz de quem gravava, e os outros
+  responderam "eu te ouço": só o sentido computador → fone falhou;
+- nenhum log do Windows registra nada entre 20:11 e 20:12:52; o primeiro evento
+  é o Bluetooth sendo desligado;
+- as duas trilhas têm zero descontinuidades: o VoxVault só lia.
+
+O som se perdeu depois do mecanismo de áudio do Windows: no driver Bluetooth,
+no rádio ou no fone. O que esta evidência não exclui é uma falha que só ocorra
+com o VoxVault gravando; decide isso saber se ela já ocorria sem ele.
+
+**Um fato medido que confirma o detector de travamento.** Ao desligar o
+Bluetooth, o microfone do fone parou de entregar pacotes 6 s antes de o Windows
+remover o dispositivo, sem erro algum. É o caso que o supervisor agora trata
+como perda — 4 s sem pacote —, onde antes só um erro contava.
+
+## Três defeitos que só apareceram fora do laboratório
+
+**O serviço ficava invisível quando nascia dentro de outro aplicativo.** O
+Claude Desktop é instalado como pacote do Windows (MSIX), e tudo o que um
+processo iniciado de dentro dele grava em `%APPDATA%` vai para uma pasta
+privada do pacote. Um serviço iniciado assim — pelo terminal do Claude, ou por
+um servidor MCP que ele sobe — publicava o endereço onde nenhum outro processo
+enxergava, mas continuava segurando a trava da máquina, que é objeto do kernel
+e não é redirecionada. O aplicativo aberto pelo Explorer não achava o serviço e
+não conseguia subir outro: "falhou ao iniciar 3 vezes seguidas".
+
+Verificado, e não suposto: uma escrita em `%APPDATA%` aparece em
+`…\Packages\Claude_…\LocalCache\Roaming\`, uma escrita na raiz do perfil não; o
+redirecionamento vale para a árvore inteira de processos, e um neto criado com
+política de desprendimento continua redirecionado. O estado por usuário —
+configuração, ponto de encontro e log do serviço — agora mora em
+`%USERPROFILE%\.voxvault`. A configuração antiga é copiada na primeira leitura,
+e não movida, porque uma versão anterior do aplicativo ainda a lê de lá.
+
+O registro do servidor MCP não é afetado: o pacote do Claude exclui a própria
+pasta de configuração do redirecionamento, e o arquivo que ele lê é o
+`%APPDATA%\Claude` real — conferido antes de mexer, e por isso não mexido.
+
+O que continua valendo: um serviço iniciado de dentro do Claude roda dentro do
+contêiner dele, e fechar ou atualizar o Claude pode encerrá-lo. Iniciado pelo
+aplicativo ou por um terminal comum, não.
+
+**O serviço nunca encerrava por ociosidade.** O laço de supervisão renovava o
+"último cliente visto" sempre que um cliente tinha sido visto havia pouco — e
+assim cada verificação rearmava a janela que estava verificando. Bastava um
+cliente ter falado com o serviço uma vez para ele nunca mais encerrar: medido,
+38 minutos residente sem nada a fazer. Agora só trabalho de verdade — gravação
+ou fila — empurra o relógio; um cliente conectado continua segurando o serviço
+porque as próprias consultas dele o renovam. Os testes cobriam `busy()` e
+`has_work()` isoladamente, e cada um estava certo; o defeito estava no laço que
+os combinava. O teste novo roda o laço real com relógios curtos e falha na
+versão antiga.
+
+**Uma pausa no fone Bluetooth sumia da linha do tempo.** Em modo estéreo
+(A2DP), o relógio do fone para quando nada toca: medido, 12 s de silêncio
+avançaram 20 ms de posição. O posicionador confiava só na posição, então o
+áudio seguinte era colado logo depois do anterior, e tudo dali em diante ficava
+12 s adiantado em relação ao microfone. Em reunião o fone fica em modo de
+chamada (HFP), que transmite sem parar — por isso os 39 minutos da reunião real
+bateram e o defeito não apareceu antes. Agora, quando o instante de aquisição se
+afasta da posição além do limiar de 200 ms, o instante decide onde o pacote
+fica, e a pausa é registrada como lacuna. Com os pacotes reais do fone: linha
+do tempo de 17,312 s contra 17,328 s de relógio de parede, onde antes seriam
+4,79 s.
+
+O teste de hardware que exigia menos de 1 ms em todo passo falhava nesse fone
+por outro motivo, legítimo: os primeiros ~15 pacotes chegam a cada 20 ms
+carregando 10 ms cada — o enlace acordando, ~150 ms no total, abaixo do
+limiar. Ele agora mede o fluxo já estabilizado e exige que a partida fique
+abaixo do limiar, que é o que garante que ela nunca vire silêncio inventado.
+
 ## O que bloqueia o fechamento
 
-1. **O áudio da máquina.** Enquanto os endpoints não abrirem, a verificação ao
-   vivo de migração de dispositivo e de suspensão não é possível. Reiniciar o
-   `Audiosrv` com elevação resolve.
+1. **Verificação ao vivo de perda e migração de dispositivo**, e de suspensão.
+   Exigem alguém desligando o Bluetooth ou suspendendo a máquina durante uma
+   gravação.
 2. **O registro do servidor MCP**, que é configuração de outro aplicativo.
-3. **Áudio de reunião real**, para o veredito de qualidade que a Fase 0 deixou
+3. **O veredito de qualidade sobre a reunião real**, que a Fase 0 deixou
    explicitamente para o usuário.
