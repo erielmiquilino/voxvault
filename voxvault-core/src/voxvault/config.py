@@ -53,16 +53,58 @@ _VALID_DEVICES = frozenset({"cuda", "cpu", "auto"})
 _VALID_COMPUTE = frozenset({"float16", "float32", "int8", "int8_float16", "auto"})
 
 
+def user_state_dir() -> Path:
+    """Where every per-user file lives: configuration, rendezvous, service log.
+
+    Deliberately not under ``%APPDATA%``. A process started from inside a
+    packaged Windows app -- the terminal of the Claude desktop app, or an MCP
+    server it launches -- has everything it writes under AppData redirected
+    into that package's private folder, and nothing outside the package ever
+    sees it. Measured here: a resident service started that way published its
+    address where no other surface could read it, while still holding the
+    machine-wide claim -- so no surface could find the service, and none could
+    start another. The redirection covers the whole process tree and cannot be
+    escaped from inside; the user profile root is not redirected at all.
+    """
+    if os.name == "nt":
+        profile = os.environ.get("USERPROFILE")
+        return (Path(profile) if profile else Path.home()) / ".voxvault"
+    return Path.home() / ".config" / "voxvault"
+
+
 def user_config_path() -> Path:
     """The fixed per-user configuration file.
 
     Fixed is the point: it does not move with the working directory, and every
     surface finds the same file no matter how it was launched.
     """
+    return user_state_dir() / "config.json"
+
+
+def legacy_user_config_path() -> Path | None:
+    """Where the configuration lived before :func:`user_state_dir` moved it."""
+    if os.name != "nt":
+        return None
     appdata = os.environ.get("APPDATA")
-    if appdata:
-        return Path(appdata) / "VoxVault" / "config.json"
-    return Path.home() / ".config" / "voxvault" / "config.json"
+    return Path(appdata) / "VoxVault" / "config.json" if appdata else None
+
+
+def _carry_over_legacy_config(target: Path) -> None:
+    """Move a configuration written before the move to where it is now read.
+
+    Copied, not moved: an older build of the desktop app still reads the old
+    place, and taking the file from under it would silently reset its choices.
+    """
+    legacy = legacy_user_config_path()
+    if legacy is None or target.exists() or not legacy.is_file():
+        return
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_bytes(legacy.read_bytes())
+        tmp.replace(target)
+    except OSError:
+        pass  # read_config_file falls back to reading the legacy file
 
 
 @dataclass(slots=True)
@@ -232,6 +274,12 @@ def _validate(cfg: Config) -> None:
 def read_config_file(path: Path | None = None) -> tuple[dict[str, Any], Path]:
     """Read the user's configuration file. A missing file is not an error."""
     target = path or user_config_path()
+    if path is None:
+        _carry_over_legacy_config(target)
+        if not target.exists():
+            legacy = legacy_user_config_path()
+            if legacy is not None and legacy.is_file():
+                target = legacy  # the copy failed; read it where it is
     if not target.exists():
         return {}, target
     try:
@@ -299,6 +347,10 @@ def write_config_file(values: dict[str, Any], path: Path | None = None) -> Path:
     surface at once, and the moment to catch that is here.
     """
     target = path or user_config_path()
+    if path is None:
+        # Before merging: writing one field into a fresh file would otherwise
+        # drop every choice still sitting in the old location.
+        _carry_over_legacy_config(target)
     merged, _ = read_config_file(target)
     merged.update({k: (str(v) if isinstance(v, Path) else v) for k, v in values.items()})
 

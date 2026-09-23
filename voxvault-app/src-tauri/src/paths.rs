@@ -19,16 +19,30 @@ const ENV_DATA_DIR: &str = "VOXVAULT_DATA_DIR";
 
 const DEFAULT_DATA_DIR: &str = r"D:\VoxVault";
 
-/// Per-user configuration directory, matching `config.user_config_path()`.
+/// Per-user state directory, matching `config.user_state_dir()`.
+///
+/// Not under `%APPDATA%`, and the reason is the whole point: a process started
+/// from inside a packaged Windows app -- the terminal of the Claude desktop app,
+/// for one -- has what it writes under AppData redirected into that package's
+/// private folder. A service started that way published its address where this
+/// app could not read it, while still holding the machine-wide claim, so the app
+/// could neither find it nor start another. The profile root is not redirected.
 pub fn user_config_dir() -> PathBuf {
-    match env::var_os("APPDATA") {
-        Some(appdata) => PathBuf::from(appdata).join("VoxVault"),
-        None => home_dir().join(".config").join("voxvault"),
+    if cfg!(windows) {
+        home_dir().join(".voxvault")
+    } else {
+        home_dir().join(".config").join("voxvault")
     }
 }
 
 pub fn user_config_file() -> PathBuf {
     user_config_dir().join("config.json")
+}
+
+/// Where the configuration lived before it moved out of AppData. Read only as
+/// a fallback: the core copies it over the first time it reads it.
+fn legacy_user_config_file() -> Option<PathBuf> {
+    env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("VoxVault").join("config.json"))
 }
 
 /// The user-scope rendezvous point where the resident service publishes the
@@ -109,7 +123,13 @@ pub fn effective_data_dir() -> (PathBuf, DataDirSource) {
             return (PathBuf::from(text), DataDirSource::Environment);
         }
     }
-    if let Ok(text) = std::fs::read_to_string(user_config_file()) {
+    let current = user_config_file();
+    let file = if current.is_file() {
+        Some(current)
+    } else {
+        legacy_user_config_file().filter(|legacy| legacy.is_file())
+    };
+    if let Some(text) = file.and_then(|path| std::fs::read_to_string(path).ok()) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(dir) = value.get("data_dir").and_then(|v| v.as_str()) {
                 let dir = dir.trim();

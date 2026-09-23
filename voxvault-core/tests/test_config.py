@@ -165,3 +165,82 @@ def test_derived_paths_hang_off_the_data_dir() -> None:
     cfg = Config(data_dir=Path(r"D:\Qualquer"))
     assert cfg.db_path == Path(r"D:\Qualquer\voxvault.db")
     assert cfg.recordings_dir == Path(r"D:\Qualquer\recordings")
+
+
+# -- where per-user state lives --------------------------------------------
+
+windows_only = pytest.mark.skipif(os.name != "nt", reason="a pasta antiga so existe no Windows")
+
+
+@pytest.fixture
+def profile(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """A user profile and an AppData of our own, so nothing real is touched."""
+    home, appdata = tmp_path / "perfil", tmp_path / "perfil" / "AppData" / "Roaming"
+    appdata.mkdir(parents=True)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("APPDATA", str(appdata))
+    return home, appdata
+
+
+@windows_only
+def test_per_user_state_is_not_under_appdata(profile) -> None:
+    """A process started inside a packaged app has AppData redirected.
+
+    The service started that way published its address where nothing outside
+    the package could read it, and still held the machine-wide claim. Nothing
+    per-user may live where that redirection applies.
+    """
+    from voxvault.config import user_config_path, user_state_dir
+
+    home, appdata = profile
+    assert user_state_dir() == home / ".voxvault"
+    assert appdata not in user_config_path().parents
+
+
+@windows_only
+def test_a_configuration_in_the_old_place_is_carried_over(profile) -> None:
+    from voxvault.config import read_config_file, user_config_path
+
+    _home, appdata = profile
+    legacy = appdata / "VoxVault" / "config.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"mic_policy": "seguir_padrao"}), encoding="utf-8")
+
+    values, source = read_config_file()
+
+    assert values == {"mic_policy": "seguir_padrao"}
+    assert source == user_config_path()
+    assert json.loads(user_config_path().read_text(encoding="utf-8")) == values
+    assert legacy.is_file(), "copiado, nao movido: um app antigo ainda le dali"
+
+
+@windows_only
+def test_the_new_place_wins_over_the_old(profile) -> None:
+    from voxvault.config import read_config_file, user_config_path
+
+    _home, appdata = profile
+    legacy = appdata / "VoxVault" / "config.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"language": "en"}), encoding="utf-8")
+    user_config_path().parent.mkdir(parents=True)
+    user_config_path().write_text(json.dumps({"language": "pt"}), encoding="utf-8")
+
+    values, _source = read_config_file()
+
+    assert values == {"language": "pt"}
+
+
+@windows_only
+def test_writing_one_field_keeps_the_choices_still_in_the_old_place(profile) -> None:
+    """The first write after the move must not start from an empty file."""
+    from voxvault.config import read_config_file
+
+    _home, appdata = profile
+    legacy = appdata / "VoxVault" / "config.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"language": "pt"}), encoding="utf-8")
+
+    write_config_file({"model": "large-v3-turbo"})
+
+    values, _source = read_config_file()
+    assert values == {"language": "pt", "model": "large-v3-turbo"}
