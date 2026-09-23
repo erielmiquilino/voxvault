@@ -91,6 +91,11 @@ aproveitado. Antivírus às vezes estranham um programa que baixa e executa um
 interpretador; se o seu bloquear o preparo, a tela diz qual arquivo e o que
 fazer.
 
+Antivírus com proteção de acesso ao microfone, como o Kaspersky, seguram o
+áudio do serviço do VoxVault até você responder ao aviso deles: na primeira
+gravação, procure esse aviso e permita, marcando para lembrar a escolha. Sem
+isso a gravação não começa, e o VoxVault diz que o fluxo de áudio não abriu.
+
 ## Uso
 
 **Bandeja.** Fechar ou minimizar a janela recolhe o VoxVault para a bandeja,

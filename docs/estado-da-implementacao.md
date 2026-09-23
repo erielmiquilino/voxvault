@@ -522,9 +522,12 @@ abaixo do limiar, que é o que garante que ela nunca vire silêncio inventado.
 2. **O registro do servidor MCP**, que é configuração de outro aplicativo.
 3. **O veredito de qualidade sobre a reunião real**, que a Fase 0 deixou
    explicitamente para o usuário.
-4. **O serviço de áudio do Windows desta máquina**, que desde 23/09 recusa
-   abrir qualquer dispositivo; sem ele, as verificações da bandeja que começam
-   uma gravação ficam paradas. Voltar a ele é reiniciar o serviço "Áudio do
-   Windows" como administrador, ou reiniciar a máquina.
+4. **Resolvido: o áudio desta máquina**, que desde as 09:46 de 23/09 recusava
+   abrir qualquer dispositivo, em qualquer processo. Reiniciar o serviço de
+   áudio mudou o sintoma de erro COM para fluxos que nunca armavam; a causa era
+   a proteção de acesso ao microfone do Kaspersky, que segura o áudio de um
+   processo até alguém responder ao aviso dela. Com o VoxVault nas exclusões,
+   todos os dispositivos voltaram a abrir. O erro de fluxo que não arma agora
+   aponta essa causa.
 5. **O preparo completo, a instalação e a publicação**, cada um esperando uma
    decisão: ver [Distribuição pública](#distribuição-pública).

@@ -15,7 +15,9 @@ O instalador não tem assinatura de código, então o Windows SmartScreen avisa 
 primeira execução. Clique em **Mais informações → Executar assim mesmo**.
 Antivírus às vezes estranham o preparo do primeiro uso, que baixa e executa um
 interpretador Python; se o seu bloquear, a tela de preparo diz o que parou e
-permite retomar.
+permite retomar. E os que protegem o acesso ao microfone, como o Kaspersky,
+seguram o áudio do VoxVault até você permitir no aviso deles, na primeira
+gravação.
 
 ## O que é baixado no primeiro uso
 

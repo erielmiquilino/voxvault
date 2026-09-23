@@ -320,8 +320,15 @@ class CaptureStream:
         self._thread.start()
         if not self._armed.wait(timeout_s):
             self._stop.set()
+            # Measured on the reference machine: Kaspersky's microphone
+            # protection holds the stream of a process it has not been told
+            # to trust until somebody answers its prompt, and the stream
+            # simply never arms -- no error from Windows at all.
             raise CaptureError(
-                f"fluxo '{self.name}' nao ficou armado em {timeout_s:.1f} s"
+                f"fluxo '{self.name}' nao ficou armado em {timeout_s:.1f} s. "
+                f"Um antivirus com protecao de acesso ao microfone pode estar "
+                f"segurando o audio a espera de permissao: procure o aviso dele "
+                f"e permita o VoxVault."
             )
         self._arming_ms = (time.perf_counter() - started_at) * 1000.0
         if self._error is not None:
