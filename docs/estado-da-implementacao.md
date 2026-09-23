@@ -337,6 +337,19 @@ núcleo e o `uv`, não Python: o preparo do primeiro uso monta o ambiente em
   aplicativo apontado para reuniões fictícias geradas por
   `tools/dados-de-demonstracao.py`, e os quatro ícones da bandeja.
 
+### Revisão pré-publicação
+
+Sem achados, sobre o histórico inteiro — todas as revisões, não só a última:
+todos os commits com autor e committer `erielmiquilino@hotmail.com`; nenhum
+token (`gho_`, `ghp_`, `github_pat_`, `sk-`, `AKIA`, `xox*-`, `AIza`) nem chave
+privada; nenhum banco, WAL, FLAC, WAV, Opus, MP3 ou vídeo em commit algum;
+nenhuma menção ao domínio ou ao e-mail corporativo; nenhum caminho de perfil
+pessoal nos arquivos publicados, inclusive dentro das 25 imagens. Do `.claude/`
+vão só os comandos e as skills do OpenSpec. Uma observação sem ser achado: a
+seção [A primeira reunião real](#a-primeira-reunião-real) descreve a duração, o
+fone e os horários de uma reunião verdadeira e cita duas frases genéricas dela,
+sem nome, empresa ou conteúdo.
+
 ### Três defeitos encontrados ao executar
 
 **A retomada do download não existia mais.** O `huggingface_hub` 1.x passou a

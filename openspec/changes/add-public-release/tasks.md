@@ -53,7 +53,7 @@
 - [x] 9.2 Criar `tools/dados-de-demonstracao.py` com reuniões fictícias, gerar as capturas de Gravação, Biblioteca e Reunião em `docs/imagens/` pelo `Page.captureScreenshot` do depurador do WebView2, e montar `docs/imagens/bandeja.png` com os quatro ícones de estado lado a lado a partir dos PNG de `add-resident-tray`; verificar que nenhuma imagem contém dado real.
 - [x] 9.3 Reescrever `README.md` com as seções da decisão 13, os tamanhos medidos, os destinos de rede do preparo (`github.com` para o interpretador, `pypi.org`/`files.pythonhosted.org` para os pacotes, `huggingface.co` para o modelo) e o aviso do SmartScreen; verificar que todos os comandos e caminhos citados existem na versão final.
 - [x] 9.4 Criar `.github/release-notes.md` com o texto permanente exigido pela spec; verificar que cobre arquivo a baixar, aviso de assinatura, downloads do primeiro uso com tamanhos, requisitos e o que é acessado na máquina.
-- [ ] 9.5 Fazer a revisão pré-publicação da decisão 14 (segredos, bancos, áudios, dados pessoais, e-mail de autoria em todo o histórico igual a `erielmiquilino@hotmail.com`); verificar com o relatório da revisão sem achados.
+- [x] 9.5 Fazer a revisão pré-publicação da decisão 14 (segredos, bancos, áudios, dados pessoais, e-mail de autoria em todo o histórico igual a `erielmiquilino@hotmail.com`); verificar com o relatório da revisão sem achados.
 
 ## 10. Verificação ponta a ponta
 
