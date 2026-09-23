@@ -21,6 +21,8 @@ Var VoxDados
   Pop ${SAIDA}
 !macroend
 
+; Every register it touches comes back as it was: the caller's $R0 and $R1
+; are often exactly the text it is searching in.
 Function un.VoxProcurar
   Exch $R1
   Exch
@@ -33,20 +35,20 @@ Function un.VoxProcurar
   vox_procurar_laco:
     StrCpy $R4 $R0 $R3 $R2
     StrCmp $R4 "" vox_procurar_nada
-    StrCmp $R4 $R1 vox_procurar_achou
+    StrCmp $R4 $R1 vox_procurar_fim
     IntOp $R2 $R2 + 1
     Goto vox_procurar_laco
-  vox_procurar_achou:
-    StrCpy $R0 $R2
-    Goto vox_procurar_fim
   vox_procurar_nada:
-    StrCpy $R0 -1
+    StrCpy $R2 -1
   vox_procurar_fim:
+  ; Stack: old R1, old R0, old R2, old R3, old R4; the answer is in $R2.
   Pop $R4
   Pop $R3
-  Pop $R2
+  Exch $R2
+  Exch
+  Pop $R0
+  Exch
   Pop $R1
-  Exch $R0
 FunctionEnd
 
 ; The value of "diretorio_de_dados" in the status line, with the JSON escapes
@@ -119,6 +121,10 @@ FunctionEnd
     ${If} $2 <> 0
       RMDir /r /REBOOTOK "$PROFILE\.voxvault"
     ${EndIf}
+    ; The embedded browser's cache: nothing of the user's is in it.
+    RMDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    RMDir /r "$INSTDIR\${MAINBINARYNAME}.exe.WebView2"
+    RMDir "$INSTDIR"
     ${If} $VoxDados != ""
       MessageBox MB_OK|MB_ICONINFORMATION "O VoxVault foi removido. Suas gravações foram mantidas em $VoxDados." /SD IDOK
     ${Else}
