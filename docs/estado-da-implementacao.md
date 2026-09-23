@@ -11,7 +11,7 @@ nas duas colunas. Onde não está, o motivo está dito.
 
 | | |
 |---|---|
-| Testes | 531 em Python e 67 em Rust, todos passando, inclusive os de GPU; o CI roda os que não pedem áudio nem GPU |
+| Testes | 551 em Python e 68 em Rust, todos passando, inclusive os de áudio e GPU; o CI roda os que não pedem áudio nem GPU |
 | Lint | `ruff` limpo em `src` e `tests` |
 | Código | 21.281 linhas de fonte entre núcleo e aplicativo, 8.331 de teste |
 | Subida da linha de comando | 213 ms |
@@ -220,7 +220,7 @@ falha na versão anterior.
 
 ## Bandeja residente
 
-**Implementada; verificada executando no que não depende de áudio.** Fechar ou
+**Implementada e verificada executando, instalada e gravando.** Fechar ou
 minimizar a janela a destrói, e o processo continua só com a bandeja, o atalho,
 as notificações e uma linha de supervisão. Um WebView2 escondido não libera
 nada, então a janela não é escondida: deixa de existir, e é refeita na última
@@ -258,7 +258,20 @@ amostras: **0,02% de processador em média e 0,10% de pico, 65,0 MB em média e
 65,4 MB de pico** — o serviço com 51,8 MB, o aplicativo com 13,3 MB — contra
 tetos de 1% e 100 MB. Com a janela aberta, a medição da Fase 3 continua valendo.
 
-### Três defeitos encontrados medindo
+Instalado, o mesmo conjunto media **101,9 MB** ocioso na bandeja depois de a
+janela ter sido usada, acima do teto (o defeito está logo abaixo). Corrigido,
+a medição do aplicativo instalado, usado e recolhido ficou em **31,4 MB em
+média e 0,01% de processador**: o aplicativo com 3,1 MB, o serviço com 9,9 MB,
+e o resto nos dois lançadores e no console do serviço.
+
+Gravando 60 minutos na bandeja, instalado e sem rede — com o microfone
+silenciado duas vezes e o fone desconectado no meio —, 685 amostras:
+**0,20% de processador em média, 0,34% na pior janela de um minuto, 65,9 MB em
+média e 70,2 MB de pico**, contra 1,14% e 1,66% medidos com a janela aberta e
+o teto de 250 MB. As duas trilhas decodificam inteiras até o fim, e a hora foi
+transcrita na GPU em cerca de 70 s depois de encerrar.
+
+### Quatro defeitos encontrados medindo
 
 **Uma conexão SQLite vazada por requisição.** A primeira medição subiu de
 84,6 MB para 106,1 MB em 10 minutos. O servidor HTTP do serviço abre uma linha
@@ -278,6 +291,17 @@ como tal, não como recusa.
 repetidos ficavam todos presos em `IAudioClient::Initialize`. O serviço recusa
 agora um segundo início enquanto o primeiro abre os dispositivos, e o aplicativo
 não dispara outro enquanto um está em curso.
+
+**A memória que a janela deixava.** Recolher destrói a janela, mas o processo
+continuava com as páginas de tudo o que o WebView2 tinha carregado — 36,7 MB,
+dos quais só 6,5 MB privados —, e o serviço com as da partida e das
+transcrições, 46,4 MB: o aplicativo instalado, usado e recolhido, passava do
+teto. Esvaziados por fora, os dois ficaram em 2,6 MB e 10,2 MB e não voltaram
+a crescer. O aplicativo devolve agora essas páginas ao Windows 10 s depois de
+recolher, e o serviço, uma vez, 30 s depois de o trabalho acabar; elas voltam
+se forem usadas, como o Windows faz com uma janela minimizada. A ferramenta de
+medição, por sua vez, procurava o serviço só no caminho do checkout, e media o
+aplicativo instalado sem ele.
 
 ### Gravando, com o aplicativo instalado
 
@@ -299,17 +323,54 @@ Depois que o áudio voltou, no aplicativo instalado e recolhido na bandeja:
   grava; cancelar mantém a gravação e o aplicativo; confirmar encerra a
   gravação de forma limpa, que vai para a fila e é transcrita pelo serviço com
   o aplicativo já fechado, e o aplicativo sai em cerca de 1 s.
+- **Microfone mudo pelo Windows.** Numa gravação de 60 minutos pela bandeja,
+  sem rede, o microfone silenciado duas vezes pelo painel de som: nos dois
+  episódios, um único "Aviso de captura" entre 60 e 62 s depois de silenciar —
+  o primeiro durou quase 9 minutos sem aviso novo — e nenhum com o sinal de
+  volta. Com o microfone vivo e a sala quieta, o pico ficou no piso de ruído,
+  0,0001, e nenhum aviso em 10 minutos.
+- **Fone desconectado no meio da gravação.** Tirar o fone com microfone levou
+  as duas trilhas a trocar de dispositivo em 2 s — o microfone para o da
+  webcam, o áudio do sistema para o monitor —, com um aviso da perda e um da
+  troca em cada trilha, e a gravação seguiu sem divergência entre elas.
+
+### O que a hora gravando mostrou
+
+**Um pacote silencioso ocupava o triplo do seu tempo.** A trilha do sistema da
+gravação de uma hora terminou 16,66 s mais longa que a reunião, com os
+metadados dizendo divergência final de 0 ms. O som de uma notificação das
+16:32:17 estava no lugar certo do arquivo; o de uma das 17:10:17, 16,6 s
+adiante. Entre os dois, o Windows entregou uns 8 s de pacotes marcados como
+silenciosos — o que acontece quando um programa mantém a saída aberta depois
+de um som —, e cada um era escrito com o número de quadros do dispositivo, a
+48 kHz, tomado como quadros de 16 kHz. A linha do tempo contava certo e o
+arquivo não, e o alinhamento final compara linhas do tempo. Com um monitor
+HDMI ou um aplicativo que segura o áudio em silêncio, a fala dos outros
+participantes iria sendo empurrada para depois. Corrigido: o silêncio é
+sintetizado nos quadros do dispositivo e passa pela mesma conversão de
+qualquer áudio; dois testes que falham na versão anterior ("1 s de pacotes
+silenciosos virou 3.00 s") conferem a duração e a posição do áudio seguinte.
+Entre as gravações guardadas, a reunião real de 39 minutos não foi afetada
+(+0,06 s); duas de teste, sim. O caso não se deixou provocar sob demanda num
+dispositivo real; com bipes tocados em instantes conhecidos, a trilha do
+sistema os pôs a no máximo 0,12 s do esperado.
 
 ### Em aberto
 
-- **Avisos de captura** (microfone mudo pelo Windows) e a **medição de 60
-  minutos gravando na bandeja**: fazem parte de uma sessão de uma hora com o
-  usuário silenciando o microfone.
 - **A sugestão de reunião detectada** com o botão "Gravar": pedia uma chamada de
   teste num aplicativo reconhecido, e ficou para depois, por decisão do usuário.
 - **O clique numa notificação** abrindo a reunião: a decisão que ele aciona foi
-  separada numa função e testada, e o clique pelo Windows depende de alguém
-  clicar.
+  separada numa função e testada; a notificação de uma transcrição concluída
+  com o aplicativo na bandeja chegou 1 s depois do fim dela, e o clique pelo
+  Windows depende de alguém clicar.
+- **Quatro avisos por troca de fone.** Tirar um fone com microfone gera, de uma
+  vez, a perda e a troca de cada trilha; juntar as duas de cada trilha num aviso
+  só, e pôr acentos nas mensagens que vêm do núcleo ("recuperando por ate
+  30s"), deixaria a troca menos ruidosa.
+- **A trilha do sistema segue o padrão de comunicações.** Com os padrões de
+  saída divididos — aqui, depois de tirar o fone, comunicações no monitor e
+  multimídia na saída digital —, um som tocado no padrão multimídia, como o de
+  uma chamada no navegador, não entra na gravação.
 
 ### O áudio que parou era o antivírus
 
@@ -404,21 +465,25 @@ dispararia dois preparos seguidos.
   atalho no menu Iniciar com o AUMID `com.erielmiquilino.voxvault` — as
   notificações do aplicativo instalado chegam por ele — e a entrada em
   Programas.
-- **Primeiro uso, máquina limpa.** Com o perfil do VoxVault zerado e o `PATH`
-  só com as pastas do Windows: o preparo completo com GPU — interpretador,
-  dependências e CUDA, o modelo já presente na pasta anterior — em cerca de
-  1 minuto; um diálogo sintetizado em `.opus` importado, transcrito pelo
-  serviço com `large-v3` na GPU, achado pela busca e excluído; gravação pela
-  bandeja. Repetir o preparo com o carimbo alterado levou 2 s e não baixou nada.
-- **CPU.** Num perfil temporário com `VOXVAULT_FORCAR_CPU=1`: nenhum pacote da
-  NVIDIA no ambiente, o turbo escolhido, e a transcrição registrada como
-  `large-v3-turbo/cpu/int8`. Com todos os proxies numa porta morta, o preparo
+- **Primeiro uso, máquina limpa (10.1).** Com o perfil do VoxVault zerado e o
+  `PATH` só com as pastas do Windows: o preparo completo com GPU —
+  interpretador, dependências e CUDA, o modelo já presente na pasta anterior —
+  em cerca de 1 minuto; um diálogo sintetizado em `.opus` importado, transcrito
+  pelo serviço com `large-v3` na GPU, achado pela busca e excluído; gravação
+  pela bandeja. Repetir o preparo com o carimbo alterado levou 2 s e não
+  baixou nada.
+- **CPU (10.2).** Num perfil temporário com `VOXVAULT_FORCAR_CPU=1`: nenhum
+  pacote da NVIDIA no ambiente, o turbo escolhido, e a transcrição registrada
+  como `large-v3-turbo/cpu/int8`. Com todos os proxies numa porta morta, o preparo
   parou em "Sem conexão com a internet: o preparo precisa baixar o
   interpretador Python", com Retomar; retomado com rede, o progresso por etapa
   mostrou os bytes ("639 KB de 275 MB" até "275 MB de 275 MB").
-- **Sem rede depois do preparo.** Com todos os proxies mortos: importação,
-  transcrição, busca sem acento, exclusão, e o servidor MCP instalado
-  respondendo a `buscar`, `criar_nota` e `listar_notas`.
+- **Sem rede depois do preparo (10.3).** Com todos os proxies mortos:
+  importação, transcrição, busca sem acento, exclusão, e o servidor MCP
+  instalado respondendo a `buscar`, `criar_nota` e `listar_notas`. Depois, uma
+  gravação de uma hora pela bandeja com o aplicativo aberto sem rede,
+  transcrita na GPU, achada pela busca da linha de comando e pelo MCP, que
+  respondeu também a `estado_do_acervo` e gravou e listou uma nota nela.
 - **Atualização.** Da 0.1.0 para uma 0.1.1 de ensaio, com todos os proxies
   mortos: ambiente, modelo, configuração e início com o Windows preservados, o
   núcleo novo instalado no ambiente e a interface aberta em 7 s, sem download.
@@ -430,6 +495,19 @@ dispararia dois preparos seguidos.
 - **Publicação.** O ensaio por dispatch produz o instalador e o
   `SHA256SUMS.txt` como artefatos, sem tag nem versão; a soma confere com o
   arquivo baixado.
+- **O instalador do CI, de ponta a ponta (10.1 e 11.3).** O artefato do
+  ensaio, instalado no perfil real com o estado do VoxVault ausente e o `PATH`
+  só com as pastas do Windows — o próprio perfil, e não um `USERPROFILE` vazio
+  como na decisão 15, por escolha do usuário: preparo completo com GPU em
+  cerca de 45 s; uma gravação de 30 s iniciada e encerrada pelo menu da
+  bandeja, sem janela e com uma notificação de cada, transcrita pelo
+  `large-v3` na GPU 18 s depois de encerrar; um `.opus` importado e transcrito
+  pelo serviço em 14 s; os dois achados pela busca sem acento e excluídos,
+  com a prévia antes, sem sobrar pasta.
+- **Atualização sobre o mesmo ambiente, sem rede.** Um segundo artefato
+  instalado por cima, com o carimbo do ambiente envelhecido e todos os
+  proxies mortos: o aplicativo refez o ambiente pelo cache, pôs o núcleo novo
+  e abriu a interface em cerca de 8 s, sem download.
 
 ### Quatro defeitos que só a instalação mostrou
 
@@ -451,10 +529,30 @@ PyPI o *build backend* que já tinha.
 **A mensagem final da desinstalação não dizia a pasta.** A busca do gancho do
 instalador devolvia dois registradores trocados.
 
+### Mais quatro, na verificação final
+
+**O horário do `list` e do `show` era UTC.** Uma gravação das 15:42 aparecia
+como 18:42, enquanto a prévia da exclusão, as notas e as exportações já
+usavam o horário local. Um teste com fuso fixo, que vale também no CI em UTC,
+falha na versão anterior.
+
+**A importação mandava rodar a fila à mão** mesmo com o serviço residente de
+pé, que a transcreve sozinho em segundos. Agora só manda quando nenhum
+serviço serve aquela pasta de dados.
+
+**"Volume C:: precisa de 2,7 GB."** A raiz de uma unidade já termina no seu
+dois-pontos, e o preparo acrescentava outro.
+
+**Um teste que falhava só nesta máquina.** O de prazo da migração abria uma
+conexão crua logo depois de matar o processo que segurava a trava, e o Windows
+ainda liberava as travas do processo morto: `disk I/O error`. O leitor do
+próprio banco se recupera disso na primeira tentativa — conferido em sete
+rodadas —, e o teste passou a ler por ele.
+
 ### Em aberto
 
 - A mensagem final da desinstalação com a pasta de dados, depois da correção
-  do gancho, e o teste do instalador feito pelo CI (tarefas 7.3 e 11.3).
+  do gancho (7.3).
 - A tag `v0.1.0` e a release pública (11.4), que esperam confirmação.
 
 ## Decisões que valem ser lembradas

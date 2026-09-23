@@ -59,8 +59,8 @@
 
 - [x] 10.1 Máquina limpa simulada, GPU: instalar o artefato do ensaio e executar com `USERPROFILE` vazio e `PATH` sem Python e ffmpeg (decisão 15); verificar preparo completo, gravação, transcrição, importação `.opus`, exclusão e bandeja funcionando.
 - [x] 10.2 Máquina limpa simulada, CPU: repetir com `VOXVAULT_FORCAR_CPU=1`; verificar que nada de CUDA é baixado, que o modelo é o turbo e que a transcrição registra CPU e `int8`.
-- [ ] 10.3 Sem rede depois do preparo: repetir gravação, transcrição, busca e consulta pelo servidor MCP com `HTTPS_PROXY` e `HTTP_PROXY` apontando para uma porta morta; verificar que tudo funciona.
-- [ ] 10.4 Atualizar `docs/estado-da-implementacao.md` com a distribuição e as verificações; verificar que cita cada item desta seção com o resultado.
+- [x] 10.3 Sem rede depois do preparo: repetir gravação, transcrição, busca e consulta pelo servidor MCP com `HTTPS_PROXY` e `HTTP_PROXY` apontando para uma porta morta; verificar que tudo funciona.
+- [x] 10.4 Atualizar `docs/estado-da-implementacao.md` com a distribuição e as verificações; verificar que cita cada item desta seção com o resultado.
 
 ## 11. Publicação da 0.1.0 (cada ação só com confirmação explícita do usuário no momento)
 

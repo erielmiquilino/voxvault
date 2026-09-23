@@ -22,9 +22,9 @@ dia inteiro. O VoxVault parte de três decisões:
 - **Local.** Áudio e transcrição nunca saem da máquina. Depois do preparo, o
   VoxVault funciona sem rede.
 - **Leve.** Recolhido na bandeja, o conjunto inteiro (aplicativo e serviço)
-  ocupa cerca de 65 MB e 0,02% de processador. Durante a reunião a máquina
-  **só grava**; a transcrição roda depois e é interrompida se você começar a
-  gravar de novo.
+  ocupa cerca de 32 MB e 0,01% de processador; gravando, cerca de 70 MB e
+  0,2%. Durante a reunião a máquina **só grava**; a transcrição roda depois e
+  é interrompida se você começar a gravar de novo.
 - **Registro fiel.** O que foi dito não é editável, nem por você nem por um
   agente. Notas ficam ao lado, nunca por cima.
 
