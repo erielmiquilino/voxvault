@@ -32,11 +32,51 @@ def config_file(tmp_path: Path) -> Path:
     return path
 
 
-def test_defaults_are_reported_as_defaults(tmp_path: Path) -> None:
+def test_defaults_are_reported_as_defaults(tmp_path: Path, monkeypatch) -> None:
+    import voxvault.config as module
+
+    monkeypatch.setattr(module, "LEGACY_DATA_DIR", tmp_path / "sem-dados")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "perfil"))
     cfg = load_config(env={}, config_path=tmp_path / "ausente.json")
     assert cfg.model == "large-v3"
     assert cfg.source_of("model") == SOURCE_DEFAULT
-    assert cfg.data_dir == Path(r"D:\VoxVault")
+    assert cfg.data_dir == tmp_path / "perfil" / "VoxVault"
+    assert cfg.source_of("data_dir") == SOURCE_DEFAULT
+
+
+def test_a_store_at_the_previous_default_keeps_being_the_data_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Scenario: Usuario com dados na pasta padrao anterior."""
+    import voxvault.config as module
+
+    anterior = tmp_path / "D-VoxVault"
+    anterior.mkdir()
+    (anterior / "voxvault.db").write_bytes(b"")
+    monkeypatch.setattr(module, "LEGACY_DATA_DIR", anterior)
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "perfil"))
+
+    cfg = load_config(env={}, config_path=tmp_path / "ausente.json")
+
+    assert cfg.data_dir == anterior
+    assert cfg.source_of("data_dir") == module.SOURCE_LEGACY == (
+        "padrao anterior (dados existentes)"
+    )
+
+
+def test_the_diagnostic_names_the_previous_default(tmp_path: Path, monkeypatch) -> None:
+    import voxvault.config as module
+    from voxvault.doctor import format_report, run_diagnostics
+
+    anterior = tmp_path / "D-VoxVault"
+    anterior.mkdir()
+    (anterior / "voxvault.db").write_bytes(b"")
+    monkeypatch.setattr(module, "LEGACY_DATA_DIR", anterior)
+    cfg = load_config(env={}, config_path=tmp_path / "ausente.json")
+
+    texto = format_report(run_diagnostics(cfg), cfg, verbose=True)
+
+    assert f"data_dir = {anterior}  <- padrao anterior (dados existentes)" in texto
 
 
 def test_argument_beats_environment_and_file(config_file: Path) -> None:

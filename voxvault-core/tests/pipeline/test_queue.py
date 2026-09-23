@@ -365,8 +365,8 @@ def test_a_meeting_gone_before_the_claim_is_skipped_for_the_next(
     make_meeting("reuniao-2")
     pipeline.enqueue("reuniao-1")
     pipeline.enqueue("reuniao-2")
-    events: list[tuple[str, str]] = []
-    pipeline._on_event = lambda kind, detail: events.append((kind, detail))
+    events: list[tuple[str, str, str]] = []
+    pipeline._on_event = lambda kind, uid, detail: events.append((kind, uid, detail))
 
     choose = pipeline._next_queued
     vanished: list[str] = []
@@ -399,7 +399,7 @@ def test_a_meeting_gone_before_the_claim_is_skipped_for_the_next(
     assert store.active_revision(remaining) is not None
     assert str(store.get_meeting(remaining).attempt_state) == AttemptState.NONE
     assert not [e for e in events if e[0] == "falhou"], events
-    assert all(detail != vanished[0] for _, detail in events), events
+    assert all(uid != vanished[0] for _, uid, _ in events), events
 
 
 def test_the_claim_takes_only_a_waiting_meeting(store, make_meeting) -> None:
@@ -456,8 +456,8 @@ def test_a_meeting_deleted_right_after_its_publication_does_not_stop_the_queue(
     make_meeting("reuniao-2")
     pipeline.enqueue("reuniao-1")
     pipeline.enqueue("reuniao-2")
-    events: list[tuple[str, str]] = []
-    pipeline._on_event = lambda kind, detail: events.append((kind, detail))
+    events: list[tuple[str, str, str]] = []
+    pipeline._on_event = lambda kind, uid, detail: events.append((kind, uid, detail))
 
     publish = TranscriptStore.publish_revision
     deleted: list[str] = []

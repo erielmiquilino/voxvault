@@ -1,0 +1,157 @@
+# Publica a versão ao empurrar uma tag `v*`.
+#
+#     git tag v0.1.1 && git push origin v0.1.1
+#
+# O build roda em Windows porque o alvo é Windows: o instalador NSIS e o
+# WebView2 não existem em outro runner.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Ensaio: compila e guarda o instalador e as somas no run, sem publicar.
+  #
+  # Publicar SÓ acontece por tag. Um dispatch publicando usaria `ref_name`
+  # como tag, o que criaria uma versão chamada "main".
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag manda na versão publicada, mas cinco arquivos a declaram.
+      # Divergência aqui geraria "VoxVault 0.2.0" com 0.1.0 dentro — falha
+      # antes de compilar qualquer coisa, nomeando o divergente.
+      - name: Conferir versão contra a tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: voxvault-app/tools/conferir-versao.ps1 "${{ github.ref_name }}"
+
+      - name: Versão fixada do uv
+        id: uv
+        shell: pwsh
+        run: |
+          $versao = (Get-Content voxvault-app/tools/recursos.json -Raw | ConvertFrom-Json).uv.versao
+          "versao=$versao" >> $env:GITHUB_OUTPUT
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ steps.uv.outputs.versao }}
+
+      # A mesma verificação do ci.yml, antes do build: publicar um instalador
+      # que não passa nos testes seria pior que não publicar.
+      - name: Núcleo — dependências do lock
+        working-directory: voxvault-core
+        run: uv sync --frozen --extra dev --extra engine --extra mcp
+
+      - name: Núcleo — lock em dia com o pyproject
+        working-directory: voxvault-core
+        run: uv lock --check
+
+      - name: Núcleo — análise estática
+        working-directory: voxvault-core
+        run: uv run --frozen ruff check src tests
+
+      - name: Núcleo — testes
+        working-directory: voxvault-core
+        run: uv run --frozen pytest -m "not hardware and not gpu" -q -p no:cacheprovider
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voxvault-app/package-lock.json
+
+      - name: Interface — dependências
+        working-directory: voxvault-app
+        run: npm ci
+
+      - name: Interface — verificação de tipos
+        working-directory: voxvault-app
+        run: npm run check
+
+      - name: Interface — build
+        working-directory: voxvault-app
+        run: npm run build:fast
+
+      - name: Recursos do instalador
+        shell: pwsh
+        run: voxvault-app/tools/preparar-recursos.ps1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: voxvault-app/src-tauri
+
+      - name: Aplicativo — testes
+        working-directory: voxvault-app/src-tauri
+        run: cargo test --locked
+
+      - name: Aplicativo — clippy
+        working-directory: voxvault-app/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # O beforeBuildCommand refaz a interface e confere de novo o uv: o
+      # instalador sai só do que está nesta checkout.
+      - name: Build do instalador
+        working-directory: voxvault-app
+        run: npm run tauri build
+
+      # O nome que o Tauri gera tem espaço e underscore
+      # ("VoxVault_0.1.0_x64-setup.exe"). Renomear deixa o link legível e
+      # igual entre versões; as somas cobrem cada arquivo publicado.
+      - name: Preparar artefatos
+        id: artefatos
+        shell: pwsh
+        run: |
+          $versao = (Get-Content voxvault-app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force dist | Out-Null
+
+          $setup = Get-ChildItem voxvault-app/src-tauri/target/release/bundle/nsis/*-setup.exe |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $setup) { throw "instalador NSIS nao encontrado" }
+          Copy-Item $setup.FullName "dist/VoxVault-$versao-setup.exe"
+
+          Get-ChildItem dist -File | Where-Object Name -ne "SHA256SUMS.txt" | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+
+          "versao=$versao" >> $env:GITHUB_OUTPUT
+          # As notas permanentes citam o arquivo de forma genérica; as
+          # publicadas levam o nome desta versão.
+          (Get-Content .github/release-notes.md -Raw) -replace 'X\.Y\.Z', $versao |
+            Set-Content notas-da-versao.md -Encoding utf8
+          Get-ChildItem dist | ForEach-Object {
+            "{0}  {1:N2} MB" -f $_.Name, ($_.Length / 1MB) | Write-Host
+          }
+          Get-Content dist/SHA256SUMS.txt | Write-Host
+
+      # No ensaio os arquivos ficam no run, para conferir sem criar versão.
+      - name: Guardar artefatos do ensaio
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxvault-${{ steps.artefatos.outputs.versao }}
+          path: dist/*
+
+      - name: Publicar a versão
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: VoxVault ${{ steps.artefatos.outputs.versao }}
+          # A parte permanente das notas — o que baixar, o aviso do
+          # SmartScreen, os downloads do primeiro uso, o que o aplicativo
+          # acessa — vive no repositório; a lista de mudanças o GitHub gera
+          # a partir do histórico.
+          body_path: notas-da-versao.md
+          generate_release_notes: true
+          files: dist/*

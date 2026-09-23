@@ -89,8 +89,16 @@ export interface ServicoSnapshot {
   pid_do_servico: number | null;
 }
 
+export type SituacaoDoAmbiente =
+  | { tipo: "pronto" }
+  | { tipo: "desenvolvimento" }
+  | { tipo: "primeiro"; retomada: boolean }
+  | { tipo: "desatualizado"; motivo: string }
+  | { tipo: "sem_recursos" };
+
 export interface Ambiente {
   preparado: boolean;
+  situacao: SituacaoDoAmbiente;
   raiz_do_nucleo: string | null;
   executavel: string | null;
   detalhe: string;
@@ -171,7 +179,7 @@ export interface Detalhe {
 
 export interface DiretorioDeDados {
   caminho: string;
-  fonte: "environment" | "config_file" | "built_in_default";
+  fonte: "environment" | "config_file" | "built_in_default" | "padrao_anterior";
   fonte_legivel: string;
   alteravel: boolean;
   existe: boolean;
@@ -195,16 +203,59 @@ export interface ResultadoImportacao {
   detalhe: string;
 }
 
-export interface EstadoDeFechamento {
-  gravando: boolean;
-  fila_pendente: number;
-  duracao_ms: number;
-}
-
 // -- environment and service ------------------------------------------------
 
 export const ambienteEstado = () => invoke<Ambiente>("ambiente_estado");
-export const ambientePreparar = () => invoke<string>("ambiente_preparar");
+
+export interface Gpu {
+  nome: string;
+  memoria_mb: number;
+}
+
+export interface ItemDoPlano {
+  etapa: string;
+  rotulo: string;
+  bytes: number;
+  bytes_em_disco: number;
+  presente: boolean;
+  volume: string;
+}
+
+export interface VolumeDoPlano {
+  raiz: string;
+  livre: number | null;
+  necessario: number;
+  falta: number;
+}
+
+export interface PlanoDoPreparo {
+  hardware: { gpu: Gpu | null; cpu_forcada: boolean; detalhe: string };
+  escolha: { modelo: string; dispositivo: string; etapa_gpu: boolean };
+  pasta: string;
+  pasta_origem: DiretorioDeDados["fonte"];
+  pasta_origem_legivel: string;
+  itens: ItemDoPlano[];
+  total_bytes: number;
+  volumes: VolumeDoPlano[];
+  pode_iniciar: boolean;
+  recusa: string | null;
+  situacao: SituacaoDoAmbiente;
+}
+
+/** One step's news: `em_andamento`, `concluida`, `pulada` or `falhou`. */
+export interface ProgressoDoPreparo {
+  etapa: string;
+  estado: "em_andamento" | "concluida" | "pulada" | "falhou";
+  detalhe: string;
+  baixado: number | null;
+  total: number | null;
+}
+
+export const preparoPlano = (pasta: string | null) =>
+  invoke<PlanoDoPreparo>("preparo_plano", { pasta });
+export const preparoIniciar = (pasta: string | null) =>
+  invoke<string>("preparo_iniciar", { pasta });
+export const modeloBaixar = (modelo: string) => invoke<string>("modelo_baixar", { modelo });
 export const servicoEstado = () => invoke<ServicoSnapshot>("servico_estado");
 export const servicoRearmar = () => invoke<ServicoSnapshot>("servico_rearmar");
 
@@ -317,6 +368,8 @@ export const diretorioDeDadosAlterar = (caminho: string) =>
 export interface Configuracao {
   arquivo: string;
   valores: Record<string, { valor: string; origem: string }>;
+  /** The model a transcription would use now: the hardware's while nobody chose. */
+  modelo_efetivo?: string;
 }
 
 export interface Dispositivo {
@@ -357,6 +410,49 @@ export const diagnosticoDoAplicativo = () =>
 export const mcpEstado = () => invoke<string>("mcp_estado");
 export const mcpRegistrar = () => invoke<string>("mcp_registrar");
 
-// -- closing -----------------------------------------------------------------
+// -- the resident app --------------------------------------------------------
 
-export const estadoDeFechamento = () => invoke<EstadoDeFechamento>("estado_de_fechamento");
+/** The route the window reopens on: `gravacao`, `biblioteca`,
+ *  `biblioteca/<uid>` or `configuracoes`. Kept by the host process, because
+ *  the window itself is destroyed whenever it goes to the tray. */
+export const appRegistrarRota = (rota: string) => invoke<void>("app_registrar_rota", { rota });
+export const appRotaInicial = () => invoke<string>("app_rota_inicial");
+export interface MedidaDeAbertura {
+  ms_desde_o_pedido: number | null;
+  ms_na_interface: number;
+}
+export const appJanelaPronta = (msNaInterface: number) =>
+  invoke<MedidaDeAbertura>("app_janela_pronta", { msNaInterface });
+export const appUltimaAbertura = () => invoke<MedidaDeAbertura | null>("app_ultima_abertura");
+
+export type CategoriaDeNotificacao =
+  | "gravacao_iniciada"
+  | "gravacao_encerrada"
+  | "transcricao_concluida"
+  | "transcricao_falha"
+  | "avisos_de_captura"
+  | "reuniao_detectada";
+
+export type ChavesDeNotificacao = Record<CategoriaDeNotificacao, boolean>;
+
+export interface Aplicativo {
+  preferencias: {
+    atalho: string;
+    notificacoes: ChavesDeNotificacao;
+    aviso_da_bandeja_mostrado: boolean;
+  };
+  preferencias_ilegiveis: string | null;
+  /** From the registry; null when it could not be read. */
+  inicio_com_o_windows: boolean | null;
+  inicio_com_o_windows_erro: string | null;
+  atalho: { em_vigor: string | null; conflito: string | null };
+}
+
+export const aplicativoLer = () => invoke<Aplicativo>("aplicativo_ler");
+export const notificacoesDefinir = (chaves: ChavesDeNotificacao) =>
+  invoke<Aplicativo>("notificacoes_definir", { chaves });
+export const atalhoTrocar = (atalho: string) => invoke<Aplicativo>("atalho_trocar", { atalho });
+export const inicioComOWindowsDefinir = (ligado: boolean) =>
+  invoke<Aplicativo>("inicio_com_o_windows_definir", { ligado });
+export const notificacaoDeTeste = (categoria: CategoriaDeNotificacao) =>
+  invoke<void>("notificacao_de_teste", { categoria });

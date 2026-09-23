@@ -83,6 +83,10 @@ class RecordingView:
         }
 
 
+#: How many events the service keeps. A client polling every few seconds
+#: never falls this far behind; one that does resynchronizes from ``ultimo``.
+EVENTS_KEPT = 200
+
 class ResidentService:
     """Owns the capture and the transcription queue for this machine."""
 
@@ -93,12 +97,22 @@ class ResidentService:
         self._store = None
         self._pipeline = None
         self._session = None
+        #: True while a start is opening the devices. Until the session
+        #: exists nothing else says a recording is on its way, and a second
+        #: start in that window would open a second capture of the same
+        #: microphone -- one nobody would own, and no icon would show.
+        self._starting = False
         self._lock = threading.RLock()
         self._halt = threading.Event()
         self._last_client_seen = time.monotonic()
         self._server: ThreadingHTTPServer | None = None
         self._secret = ""
-        self._events: list[tuple[str, str, float]] = []
+        #: The last events, each numbered by ``_seq``, which only grows
+        #: during one run of the service. ``/eventos`` hands them out by
+        #: cursor, so a client asks for what it has not seen yet.
+        self._events: list[dict] = []
+        self._seq = 0
+        self._events_lock = threading.Lock()
         self._power = None
         self._suspended_session = ""
         self._detector = None
@@ -128,13 +142,73 @@ class ResidentService:
             from ..pipeline import TranscriptionPipeline
 
             self._pipeline = TranscriptionPipeline(
-                self.config, self.store, on_event=self._record_event
+                self.config, self.store,
+                on_event=lambda kind, uid, detail: self._record_event(
+                    kind, detail, uid=uid, title=self._title_of(uid)
+                ),
             )
         return self._pipeline
 
-    def _record_event(self, kind: str, detail: str) -> None:
-        self._events.append((kind, detail, time.time()))
-        del self._events[:-200]
+    def release_thread_resources(self) -> None:
+        """Close what the calling thread opened on the database.
+
+        Every request runs on a thread of its own that ends with the request,
+        so a connection left open by one is one more on every poll.
+        """
+        if self._store is not None:
+            self._store.release()
+        if self._pipeline is not None:
+            self._pipeline.release_thread_store()
+
+    def _record_event(
+        self, kind: str, detail: str = "", *, uid: str = "", title: str = ""
+    ) -> None:
+        """Keep one event, numbered, with the meeting it is about on its own.
+
+        The title travels with the identifier so a client can say which
+        meeting finished transcribing without asking for the list.
+        """
+        with self._events_lock:
+            self._seq += 1
+            self._events.append({
+                "seq": self._seq,
+                "tipo": kind,
+                "uid": uid,
+                "titulo": title,
+                "detalhe": detail,
+                "instante": datetime.now(UTC).isoformat(),
+            })
+            del self._events[:-EVENTS_KEPT]
+
+    def _title_of(self, uid: str) -> str:
+        if not uid:
+            return ""
+        try:
+            meeting = self.store.get_meeting(uid)
+        except Exception:
+            return ""
+        return meeting.title if meeting is not None else ""
+
+    def events_since(self, since: int | None) -> dict:
+        """The events after ``since``, oldest first, and the newest number.
+
+        Without ``since`` only the newest number comes back: that is how a
+        client that just started learns where "now" is without being handed
+        the history of things that happened before it was listening.
+        ``execucao`` changes when the service restarts and numbering starts
+        over, so a client holding an old cursor can tell a restart from a
+        quiet spell.
+        """
+        with self._events_lock:
+            latest = self._seq
+            events = [] if since is None else [
+                dict(e) for e in self._events if e["seq"] > since
+            ]
+        return {
+            "eventos": events,
+            "ultimo": latest,
+            "execucao": self.started_at.isoformat(),
+        }
 
     def recover(self) -> dict:
         """Pick up whatever the last run left unfinished.
@@ -179,7 +253,9 @@ class ResidentService:
                 )
                 summary["finalizacoes"] += 1
             except Exception as exc:
-                self._record_event("aviso", f"finalizacao de {directory.name}: {exc}")
+                self._record_event(
+                    "aviso", f"finalizacao: {exc}", uid=directory.name
+                )
 
         summary["tentativas"] = self.pipeline.recover_pending()
 
@@ -196,7 +272,7 @@ class ResidentService:
         try:
             self.pipeline.enqueue(meeting_uid)
         except Exception as exc:
-            self._record_event("aviso", f"fila de {meeting_uid}: {exc}")
+            self._record_event("aviso", f"fila: {exc}", uid=meeting_uid)
 
     def serve(self) -> int:
         """Bind, publish the rendezvous, and run until idle or stopped."""
@@ -308,6 +384,7 @@ class ResidentService:
             f"minimo duravel de '{session.title}' em {elapsed:.0f} ms"
             + ("" if elapsed <= DURABLE_MINIMUM_MS else
                f" (acima do teto de {DURABLE_MINIMUM_MS} ms)"),
+            uid=session.uid,
         )
 
     def _on_resume(self) -> None:
@@ -324,6 +401,7 @@ class ResidentService:
             "retomada",
             f"a sessao '{uid}' foi encerrada pela suspensao; concluindo a "
             f"compressao e o enfileiramento",
+            uid=uid,
         )
         try:
             summary = self.recover()
@@ -365,6 +443,8 @@ class ResidentService:
         with self._lock:
             if self._session is not None:
                 return True, "ha uma gravacao em andamento"
+            if self._starting:
+                return True, "uma gravacao esta sendo iniciada"
         try:
             pending = self.pipeline.pending()
         except Exception:
@@ -493,14 +573,32 @@ class ResidentService:
             ).to_dict()
 
     def start_recording(self, title: str = "") -> dict:
-        """Open both tracks and begin. Yields the machine from transcription first."""
+        """Open both tracks and begin. Yields the machine from transcription first.
+
+        One start at a time. Opening a device normally takes a few hundred
+        milliseconds, but a wedged audio service can hold it for minutes, and
+        a person clicking again meanwhile must be told so rather than get a
+        second recording started behind the first.
+        """
         with self._lock:
             if self._session is not None:
                 raise ServiceBusy(
                     "Ja existe uma gravacao em andamento. Encerre-a antes de "
                     "comecar outra."
                 )
+            if self._starting:
+                raise ServiceBusy(
+                    "Uma gravacao ja esta sendo iniciada: os dispositivos de "
+                    "audio ainda estao abrindo. Aguarde alguns segundos."
+                )
+            self._starting = True
+        try:
+            return self._start_recording(title)
+        finally:
+            with self._lock:
+                self._starting = False
 
+    def _start_recording(self, title: str) -> dict:
         began = time.perf_counter()
         # The machine belongs to the recording: inference is killed before a
         # single sample is captured, and the cost of doing so is measured so a
@@ -579,7 +677,7 @@ class ResidentService:
             self._session = session
 
         elapsed_ms = (time.perf_counter() - began) * 1000
-        self._record_event("gravando", session.uid)
+        self._record_event("gravando", uid=session.uid, title=session.title)
         payload = self.recording()
         payload["atraso_de_inicio_ms"] = round(elapsed_ms, 1)
         payload["liberacao_de_inferencia_ms"] = round(released * 1000, 1)
@@ -620,10 +718,10 @@ class ResidentService:
                 state=MeetingState.RECORDED,
             )
         except Exception as exc:
-            self._record_event("aviso", f"metadados de {session.uid}: {exc}")
+            self._record_event("aviso", f"metadados: {exc}", uid=session.uid)
 
         self.pipeline.resume_after_recording()
-        self._record_event("encerrada", session.uid)
+        self._record_event("encerrada", uid=session.uid, title=session.title)
         return {
             "uid": report.uid,
             "duracao_ms": report.duration_ms,
@@ -677,13 +775,14 @@ def _make_handler(service: ResidentService):
                 return
             service.touch()
 
-            route = (method, self.path.split("?")[0].rstrip("/") or "/")
+            path, _, query = self.path.partition("?")
+            route = (method, path.rstrip("/") or "/")
             try:
                 handler = _ROUTES.get(route)
                 if handler is None:
                     self._reply(HTTPStatus.NOT_FOUND, {"erro": f"rota desconhecida: {route[1]}"})
                     return
-                self._reply(HTTPStatus.OK, handler(service, self._body()))
+                self._reply(HTTPStatus.OK, handler(service, self._body(), _query(query)))
             except ServiceBusy as exc:
                 self._reply(HTTPStatus.CONFLICT, {"erro": str(exc)})
             except VoxVaultError as exc:
@@ -694,25 +793,50 @@ def _make_handler(service: ResidentService):
                 })
 
         def do_GET(self) -> None:
-            self._dispatch("GET")
+            try:
+                self._dispatch("GET")
+            finally:
+                service.release_thread_resources()
 
         def do_POST(self) -> None:
-            self._dispatch("POST")
+            try:
+                self._dispatch("POST")
+            finally:
+                service.release_thread_resources()
 
     return Handler
 
 
+def _query(raw: str) -> dict[str, str]:
+    from urllib.parse import parse_qsl
+
+    return dict(parse_qsl(raw, keep_blank_values=True))
+
+
+def _since(query: dict[str, str]) -> int | None:
+    raw = query.get("desde", "")
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        raise VoxVaultError(
+            f"'desde' tem de ser o numero de um evento, recebido '{raw}'."
+        ) from None
+
+
 _ROUTES = {
-    ("GET", "/saude"): lambda svc, body: svc.health(),
-    ("GET", "/gravacao"): lambda svc, body: svc.recording(),
-    ("GET", "/deteccao"): lambda svc, body: svc.detection(),
-    ("POST", "/gravacao/iniciar"): lambda svc, body: svc.start_recording(
+    ("GET", "/saude"): lambda svc, body, query: svc.health(),
+    ("GET", "/gravacao"): lambda svc, body, query: svc.recording(),
+    ("GET", "/deteccao"): lambda svc, body, query: svc.detection(),
+    ("GET", "/eventos"): lambda svc, body, query: svc.events_since(_since(query)),
+    ("POST", "/gravacao/iniciar"): lambda svc, body, query: svc.start_recording(
         title=str(body.get("titulo") or body.get("title") or "")
     ),
-    ("POST", "/gravacao/pausar"): lambda svc, body: svc.pause_recording(),
-    ("POST", "/gravacao/retomar"): lambda svc, body: svc.resume_recording(),
-    ("POST", "/gravacao/encerrar"): lambda svc, body: svc.stop_recording(),
-    ("POST", "/encerrar"): lambda svc, body: (_shutdown_if_idle(svc)),
+    ("POST", "/gravacao/pausar"): lambda svc, body, query: svc.pause_recording(),
+    ("POST", "/gravacao/retomar"): lambda svc, body, query: svc.resume_recording(),
+    ("POST", "/gravacao/encerrar"): lambda svc, body, query: svc.stop_recording(),
+    ("POST", "/encerrar"): lambda svc, body, query: (_shutdown_if_idle(svc)),
 }
 
 
@@ -732,6 +856,7 @@ def _shutdown_if_idle(service: ResidentService) -> dict:
 
 
 __all__ = [
+    "EVENTS_KEPT",
     "IDLE_SHUTDOWN_S",
     "RecordingView",
     "ResidentService",

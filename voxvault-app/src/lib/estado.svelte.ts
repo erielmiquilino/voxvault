@@ -23,6 +23,29 @@ export const navegacao = $state<{ tela: Tela; reuniaoAberta: string | null; foco
   focoMs: null,
 });
 
+/** The route as one string, the form the host keeps between windows. */
+export function rotaAtual(): string {
+  if (navegacao.tela === "biblioteca" && navegacao.reuniaoAberta) {
+    return `biblioteca/${navegacao.reuniaoAberta}`;
+  }
+  return navegacao.tela;
+}
+
+/** Go to a route reported by the host: a restored window, a tray action or a
+ *  notification that was clicked. Anything unrecognized lands on Gravação. */
+export function irParaRota(rota: string) {
+  const [tela, uid] = rota.split("/", 2);
+  if (tela === "biblioteca") {
+    navegacao.tela = "biblioteca";
+    navegacao.reuniaoAberta = uid || null;
+    navegacao.focoMs = null;
+  } else if (tela === "configuracoes") {
+    navegacao.tela = "configuracoes";
+  } else {
+    navegacao.tela = "gravacao";
+  }
+}
+
 export const shell = $state<{
   ambiente: Ambiente | null;
   servico: ServicoSnapshot | null;

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from voxvault.engine.media import find_ffmpeg
 from voxvault.layout import meeting_dir
 from voxvault.session.finalize import (
     Metadata,
@@ -24,10 +23,6 @@ from voxvault.session.finalize import (
     reached,
     read_metadata,
     write_metadata,
-)
-
-needs_ffmpeg = pytest.mark.skipif(
-    find_ffmpeg() is None, reason="exige o decodificador de midia"
 )
 
 
@@ -66,7 +61,6 @@ def test_step_order_is_cumulative() -> None:
     assert reached("lixo", Step.FILES_CLOSED) is False
 
 
-@needs_ffmpeg
 def test_compression_replaces_the_wav_only_after_verifying(directory: Path) -> None:
     compressed, failed = compress_tracks(directory, ["mic", "system"])
 
@@ -79,7 +73,6 @@ def test_compression_replaces_the_wav_only_after_verifying(directory: Path) -> N
         )
 
 
-@needs_ffmpeg
 def test_compression_is_lossless(directory: Path) -> None:
     """Lossy compression would bake today's quality into every future
     transcription of this meeting."""
@@ -93,7 +86,6 @@ def test_compression_is_lossless(directory: Path) -> None:
     assert (original == restored).all()
 
 
-@needs_ffmpeg
 def test_compressed_file_is_smaller(directory: Path) -> None:
     before = (directory / "mic.wav").stat().st_size
     compress_tracks(directory, ["mic"])

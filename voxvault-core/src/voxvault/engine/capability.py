@@ -11,16 +11,22 @@ to CPU" end up contradicting each other.
 | No compatible GPU in the hardware      | aviso   | available on CPU, warned |
 | GPU present, libraries broken          | falha   | REFUSED unless opted in  |
 | Model does not fit in GPU memory       | falha   | refused for that model   |
+| Default model, GPU too small for it    | aviso   | available on CPU, warned |
+
+With the model left at its default the model itself follows the hardware
+(:func:`default_model_for`): the best one the GPU holds, and the turbo on the
+CPU. A model somebody chose is taken as chosen and goes through the matrix.
 """
 
 from __future__ import annotations
 
 import enum
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 
-from ..config import Config
+from ..config import SOURCE_DEFAULT, Config
 
 #: Approximate weight footprint in GPU memory, in MB, at float16. Decoding
 #: needs headroom on top, which is why the check adds a margin.
@@ -41,6 +47,54 @@ VRAM_MARGIN_MB = 900
 
 #: Offered when the requested model does not fit, cheapest adequate first.
 _SMALLER = ["large-v3-turbo", "medium", "small", "base"]
+
+#: The default by hardware, when nobody chose a model. The best model the GPU
+#: holds; and on the CPU the turbo, which measured faster than large-v3 there
+#: (1.37x real time against 0.96x on a six-core Ryzen) and produced the most
+#: complete transcript of the three configurations compared.
+DEFAULT_GPU_MODEL = "large-v3"
+DEFAULT_SMALL_GPU_MODEL = "large-v3-turbo"
+DEFAULT_CPU_MODEL = "large-v3-turbo"
+
+#: Diagnostic switch: behave as a machine without a GPU. Read here and by the
+#: app's own hardware detection, so a CPU-prepared environment on a machine
+#: that does have a GPU is exercised end to end.
+FORCE_CPU_ENV = "VOXVAULT_FORCAR_CPU"
+
+CPU_WARNING = (
+    "Sem GPU NVIDIA, a transcricao roda na CPU, cerca de 1,4x o tempo real num "
+    "processador de 6 nucleos -- uma reuniao de 1 h leva por volta de 45 min."
+)
+
+
+def forced_cpu() -> bool:
+    return os.environ.get(FORCE_CPU_ENV, "").strip() == "1"
+
+
+def default_model_for(gpu_total_mb: int) -> tuple[str, str]:
+    """The model the defaults pick for a GPU of this size, and where it runs.
+
+    Zero means no GPU. The memory each model needs is the matrix's own, so the
+    default is never a model the matrix would then refuse.
+    """
+    if gpu_total_mb >= required_vram_mb(DEFAULT_GPU_MODEL):
+        return DEFAULT_GPU_MODEL, "cuda"
+    if gpu_total_mb >= required_vram_mb(DEFAULT_SMALL_GPU_MODEL):
+        return DEFAULT_SMALL_GPU_MODEL, "cuda"
+    return DEFAULT_CPU_MODEL, "cpu"
+
+
+def model_is_default(config: Config) -> bool:
+    """True when nobody chose the model: not a file, not the environment."""
+    return config.source_of("model") == SOURCE_DEFAULT
+
+
+def effective_model(config: Config) -> str:
+    """The model a transcription uses: the chosen one, or the hardware's."""
+    if not model_is_default(config):
+        return config.model
+    gpu = query_nvidia_gpu()
+    return default_model_for(gpu[1] if gpu else 0)[0]
 
 
 class Situation(enum.StrEnum):
@@ -85,8 +139,11 @@ def suggest_smaller(model: str, available_mb: int) -> str:
 def query_nvidia_gpu() -> tuple[str, int, int] | None:
     """Ask the driver about the GPU without importing any inference runtime.
 
-    Returns (name, total MB, free MB), or None when no NVIDIA GPU answers.
+    Returns (name, total MB, free MB), or None when no NVIDIA GPU answers --
+    or when the diagnostic switch asks to behave as if none did.
     """
+    if forced_cpu():
+        return None
     exe = shutil.which("nvidia-smi")
     if not exe:
         return None
@@ -142,25 +199,43 @@ def cuda_libraries_load() -> tuple[bool, str]:
     return True, ""
 
 
-def probe_inference(config: Config, *, model: str | None = None) -> InferenceCapability:
-    """Resolve the situation this machine is in, and what follows from it."""
+def probe_inference(
+    config: Config, *, model: str | None = None, hardware_default: bool = False
+) -> InferenceCapability:
+    """Resolve the situation this machine is in, and what follows from it.
+
+    ``hardware_default`` says the model is the one the defaults picked for
+    this GPU. A GPU too small even for the turbo then means the CPU, as the
+    default table says, and not a refusal: nobody asked for a model that does
+    not fit.
+    """
     model = model or config.model
     gpu = query_nvidia_gpu()
+    too_small_for_any = (
+        gpu is not None and hardware_default
+        and default_model_for(gpu[1])[1] == "cpu"
+    )
 
-    if gpu is None:
+    if gpu is None or too_small_for_any:
         # No compatible GPU in the hardware. CPU is a legitimate degradation
         # here, because nothing is broken -- the machine simply has no GPU.
+        detail = (
+            "Nenhuma GPU NVIDIA compativel encontrada no hardware."
+            if gpu is None else
+            f"A {gpu[0]} tem {gpu[1]} MB, menos do que o menor modelo padrao "
+            f"precisa; a transcricao usa a CPU."
+        )
         return InferenceCapability(
             situation=Situation.NO_GPU,
             status="aviso",
             transcription_available=True,
             device="cpu",
             compute_type="int8",
-            detail="Nenhuma GPU NVIDIA compativel encontrada no hardware.",
-            warning=(
-                "A transcricao vai rodar em CPU com int8. Uma reuniao de uma "
-                "hora pode levar varias horas para ser transcrita."
-            ),
+            detail=detail,
+            warning=CPU_WARNING,
+            gpu_name=gpu[0] if gpu else "",
+            gpu_total_mb=gpu[1] if gpu else 0,
+            gpu_free_mb=gpu[2] if gpu else 0,
         )
 
     name, total_mb, free_mb = gpu

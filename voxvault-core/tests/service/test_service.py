@@ -440,3 +440,70 @@ def test_recovery_finishes_a_deletion_whose_rows_are_gone(
     assert summary["exclusoes"] == 1
     assert service.store.get_meeting("reuniao-b") is None
     assert list(directory.parent.iterdir()) == []
+
+
+# -- one start at a time -----------------------------------------------
+
+def test_a_second_start_while_the_devices_open_is_refused(
+    service: ResidentService, monkeypatch
+) -> None:
+    """A wedged audio service can hold a device open for minutes. A second
+    click meanwhile must be refused, not become a second capture nobody owns."""
+    from types import SimpleNamespace
+
+    from voxvault.capture import devices, stream
+
+    liberar = threading.Event()
+    abrindo = threading.Event()
+
+    class _Aberturas:
+        def __init__(self, endpoint_id, loopback=False, name=""):
+            self.name = name
+
+    monkeypatch.setattr(
+        devices, "resolve_endpoint",
+        lambda **_: SimpleNamespace(id="falso", name="Dispositivo falso"),
+    )
+    monkeypatch.setattr(stream, "CaptureStream", _Aberturas)
+
+    class _SessaoPresa:
+        def __init__(self, *args, **kwargs):
+            self.warnings = []
+
+        def start(self):
+            abrindo.set()
+            liberar.wait(5)
+            raise RuntimeError("abertura cancelada pelo teste")
+
+    import voxvault.session as sessao
+
+    monkeypatch.setattr(sessao, "RecordingSession", _SessaoPresa)
+    monkeypatch.setattr(type(service.pipeline), "suspend_for_recording", lambda self: 0.0)
+    monkeypatch.setattr(type(service.pipeline), "resume_after_recording", lambda self: None)
+
+    primeira: list[BaseException] = []
+    fio = threading.Thread(
+        target=lambda: primeira.append(_capture(lambda: service.start_recording("A")))
+    )
+    fio.start()
+    assert abrindo.wait(5)
+
+    with pytest.raises(ServiceBusy, match="sendo iniciada"):
+        service.start_recording("B")
+    assert service.has_work() == (True, "uma gravacao esta sendo iniciada")
+
+    liberar.set()
+    fio.join(5)
+    assert isinstance(primeira[0], ServiceBusy), "a primeira falha por conta propria"
+    assert service.has_work() == (False, "")
+    # Once the first start is over, starting is possible again.
+    with pytest.raises(ServiceBusy, match="abertura cancelada"):
+        service.start_recording("C")
+
+
+def _capture(funcao):
+    try:
+        funcao()
+    except BaseException as exc:  # handed back to the test
+        return exc
+    return None

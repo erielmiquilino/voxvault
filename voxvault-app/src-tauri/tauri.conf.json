@@ -6,13 +6,14 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File tools/preparar-recursos.ps1",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "VoxVault",
         "width": 1180,
         "height": 760,
@@ -36,13 +37,37 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Eriel Miquilino",
+    "copyright": "Copyright (c) 2026 Eriel Miquilino",
+    "category": "Productivity",
+    "shortDescription": "Grava, transcreve e indexa reuniões localmente",
+    "longDescription": "Grava o microfone e o áudio do sistema em trilhas separadas, transcreve no próprio computador e guarda tudo pesquisável, sem enviar nada para a nuvem.",
+    "homepage": "https://github.com/erielmiquilino/voxvault",
+    "resources": {
+      "recursos/nucleo/": "recursos/nucleo/",
+      "recursos/uv/uv.exe": "recursos/uv/uv.exe",
+      "recursos/preparo.json": "recursos/preparo.json",
+      "../../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md",
+      "../../LICENSE": "LICENSE"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "windows/ganchos.nsh",
+        "languages": [
+          "PortugueseBR"
+        ]
+      }
+    }
   }
 }

@@ -1,0 +1,41 @@
+{
+  "gerado_de": "voxvault-core/uv.lock",
+  "sha256_lock": "fbf1c0d4174abe3f31440c593b6e393464a8bd929e676d83cc11199b0598c9d1",
+  "interpretador": {
+    "versao": "3.12.14",
+    "bytes": 21980728,
+    "bytes_em_disco": 63321361
+  },
+  "dependencias": {
+    "pacotes": 50,
+    "bytes": 100548990,
+    "bytes_em_disco": 288575601
+  },
+  "gpu": {
+    "pacotes": 3,
+    "bytes": 1376036682,
+    "bytes_em_disco": 2105336123
+  },
+  "modelos": {
+    "large-v3": {
+      "repositorio": "Systran/faster-whisper-large-v3",
+      "bytes": 3090836727
+    },
+    "large-v3-turbo": {
+      "repositorio": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+      "bytes": 1621667008
+    },
+    "medium": {
+      "repositorio": "Systran/faster-whisper-medium",
+      "bytes": 1530572644
+    }
+  },
+  "vram_minima_mb": {
+    "large-v3": 5600,
+    "large-v3-turbo": 2500
+  },
+  "folga": {
+    "ambiente": 0.2,
+    "dados_bytes": 1000000000
+  }
+}

@@ -34,6 +34,27 @@ SOURCE_ARGUMENT: Final = "argumento"
 SOURCE_ENV: Final = "variavel de ambiente"
 SOURCE_FILE: Final = "arquivo de configuracao"
 SOURCE_DEFAULT: Final = "padrao embutido"
+SOURCE_LEGACY: Final = "padrao anterior (dados existentes)"
+
+#: Where the data directory lived by default before there was an installer.
+#: A store already there stays where it is; nothing is ever moved.
+LEGACY_DATA_DIR: Final = Path(r"D:\VoxVault")
+
+
+def default_data_dir() -> tuple[Path, str]:
+    """The data directory when none is configured, and why that one.
+
+    ``VoxVault`` inside the user's profile -- a path every Windows machine has
+    -- unless a store already exists at the previous default, which then keeps
+    being the effective one: meetings do not disappear from the library just
+    because a newer build changed its mind about where they should live.
+    Evaluated at every load, never written anywhere.
+    """
+    if (LEGACY_DATA_DIR / "voxvault.db").is_file():
+        return LEGACY_DATA_DIR, SOURCE_LEGACY
+    profile = os.environ.get("USERPROFILE") if os.name == "nt" else None
+    base = Path(profile) if profile else Path.home()
+    return base / "VoxVault", SOURCE_DEFAULT
 
 #: Roles Windows exposes for a default audio endpoint. Communications is the
 #: default for VoxVault because a meeting client follows it, and following the
@@ -112,7 +133,7 @@ class Config:
     """Effective configuration, with the provenance of each value."""
 
     # --- storage -------------------------------------------------------
-    data_dir: Path = Path(r"D:\VoxVault")
+    data_dir: Path = field(default_factory=lambda: default_data_dir()[0])
 
     # --- transcription engine ------------------------------------------
     # Provisional until the qualitative comparison in Fase 0 concludes.
@@ -325,6 +346,8 @@ def load_config(
         setattr(cfg, name, _coerce(name, value, source))
         cfg.sources[name] = source
 
+    if "data_dir" not in cfg.sources:
+        cfg.data_dir, cfg.sources["data_dir"] = default_data_dir()
     for name in known:
         cfg.sources.setdefault(name, SOURCE_DEFAULT)
 

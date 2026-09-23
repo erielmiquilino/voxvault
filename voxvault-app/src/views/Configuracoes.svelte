@@ -9,6 +9,7 @@
   // accepting an edit that the precedence would annul is worse than refusing
   // it -- the user would see the change saved and keep operating on the old
   // setting with no signal.
+  import { listen } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
 
   import {
@@ -23,6 +24,8 @@
     dispositivos as lerDispositivos,
     mcpEstado,
     mcpRegistrar,
+    modeloBaixar,
+    type ProgressoDoPreparo,
     type Configuracao,
     type Dispositivo,
     type Doctor,
@@ -33,6 +36,7 @@
   import { recado, shell } from "../lib/estado.svelte";
   import { bytes } from "../lib/format";
   import Pendencia from "../lib/components/Pendencia.svelte";
+  import SecaoAplicativo from "../lib/components/SecaoAplicativo.svelte";
 
   /** Characteristics that orient the choice. The memory a model actually needs
    *  on this machine comes from the diagnostic, not from this table. */
@@ -91,6 +95,9 @@
   let systemDeviceId = $state("");
 
   let salvando = $state(false);
+  /** A model change downloads first and is written only when that finished. */
+  let baixandoModelo = $state<string | null>(null);
+  let progressoDoModelo = $state<ProgressoDoPreparo | null>(null);
   let registrando = $state(false);
   let recarregando = $state(false);
 
@@ -141,7 +148,7 @@
         config = await configuracaoLer();
         falhaConfig = null;
         vocabulario = valor("vocabulary");
-        motorEscolhido = valor("model") || "large-v3";
+        motorEscolhido = config.modelo_efetivo || valor("model") || "large-v3";
         papel = valor("device_role") || "comunicacoes";
         micPolicy = valor("mic_policy") || "seguir_padrao";
         systemPolicy = valor("system_policy") || "seguir_padrao";
@@ -190,6 +197,26 @@
       recado("erro", comoFalha(erro).mensagem);
     } finally {
       salvando = false;
+    }
+  }
+
+  async function trocarModelo() {
+    const modelo = motorEscolhido;
+    baixandoModelo = modelo;
+    progressoDoModelo = null;
+    const parar = await listen<ProgressoDoPreparo>("preparo://etapa", (evento) => {
+      if (evento.payload.etapa === "modelo") progressoDoModelo = evento.payload;
+    });
+    try {
+      // The transcription never downloads: a model that is not on disk is a
+      // transcription that fails. So the choice is written only once it is.
+      await modeloBaixar(modelo);
+      await gravarCampo([`model=${modelo}`], `Modelo ${modelo} baixado e gravado na configuração compartilhada.`);
+    } catch (erro) {
+      recado("erro", `O modelo não foi trocado: ${comoFalha(erro).mensagem}`);
+    } finally {
+      parar();
+      baixandoModelo = null;
     }
   }
 
@@ -262,6 +289,8 @@
 
 <div class="corpo">
   <div class="coluna">
+    <SecaoAplicativo />
+
     <!-- Devices -->
     <section class="cartao">
       <header>
@@ -466,15 +495,26 @@
       {/if}
 
       <div class="linha fim" style="margin-top:12px">
+        {#if baixandoModelo}
+          <span class="legenda" id="progresso-do-modelo" style="margin-right:auto">
+            Baixando o {baixandoModelo}{progressoDoModelo?.baixado != null
+              ? `: ${bytes(progressoDoModelo.baixado)}${progressoDoModelo.total ? ` de ${bytes(progressoDoModelo.total)}` : ""}`
+              : "…"}
+          </span>
+        {/if}
         <button
           class="botao primario"
-          disabled={salvando}
-          onclick={() =>
-            gravarCampo([`model=${motorEscolhido}`], "Modelo gravado na configuração compartilhada.")}
+          id="gravar-modelo"
+          disabled={salvando || baixandoModelo !== null}
+          onclick={trocarModelo}
         >
-          Gravar o modelo
+          {baixandoModelo ? "Baixando…" : "Baixar e usar este modelo"}
         </button>
       </div>
+      <p class="legenda" style="margin:6px 0 0">
+        Um modelo que ainda não está na pasta de dados é baixado antes, com o
+        progresso aqui; a escolha só passa a valer quando o download termina.
+      </p>
     </section>
 
     <!-- Data directory -->

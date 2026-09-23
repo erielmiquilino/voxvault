@@ -16,7 +16,6 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +66,10 @@ fn build(args: &[&str]) -> CoreResult<Command> {
     let mut command = Command::new(exe);
     command
         .args(args)
+        // A Python configured for something else on this machine must not
+        // leak into the core's own interpreter.
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -137,49 +140,6 @@ pub fn run_json(args: &[&str]) -> CoreResult<serde_json::Value> {
             args.join(" ")
         ),
     })
-}
-
-/// `voxvault --version`-equivalent probe, used by the preparation gate.
-///
-/// `--help` is the cheapest command the core has and touches no GPU runtime, so
-/// it answers "is this environment usable at all" without paying for a model.
-pub fn probe(timeout: Duration) -> CoreResult<()> {
-    let mut child = build(&["--help"])?
-        .spawn()
-        .map_err(|err| CoreError::Execucao {
-            detalhe: err.to_string(),
-        })?;
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => {
-                return Err(CoreError::Falha {
-                    codigo: status.code().unwrap_or(-1),
-                    detalhe: "O executável do núcleo existe mas não responde a \
-                              `--help`. O ambiente está incompleto."
-                        .to_string(),
-                })
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    return Err(CoreError::Execucao {
-                        detalhe: format!(
-                            "O núcleo não respondeu em {} s.",
-                            timeout.as_secs()
-                        ),
-                    });
-                }
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            Err(err) => {
-                return Err(CoreError::Execucao {
-                    detalhe: err.to_string(),
-                })
-            }
-        }
-    }
 }
 
 // -- the commands the app actually uses -----------------------------------

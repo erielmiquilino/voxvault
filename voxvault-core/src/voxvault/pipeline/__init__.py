@@ -60,9 +60,14 @@ class _Worker:
             text=True, encoding="utf-8", errors="replace", env=env, bufsize=1,
         )
         self.engine: EngineInfo | None = None
+        # A model is sent only when somebody chose one. Sending the built-in
+        # default would turn it into an explicit choice on the other side,
+        # and the worker would stop picking the model by hardware.
+        from ..engine.capability import model_is_default
+
         self._send({
             "data_dir": str(config.data_dir),
-            "model": model or config.model,
+            "model": model or (None if model_is_default(config) else config.model),
             "allow_cpu_fallback": config.allow_cpu_fallback,
         })
         reply = self._receive()
@@ -156,12 +161,15 @@ class TranscriptionPipeline:
         config: Config,
         store,
         *,
-        on_event: Callable[[str, str], None] | None = None,
+        on_event: Callable[[str, str, str], None] | None = None,
         worker_factory: Callable[[Config, str | None], _Worker] | None = None,
     ) -> None:
         self._config = config
         self._store = store
-        self._on_event = on_event or (lambda kind, detail: None)
+        # (kind, meeting uid, detail). The identifier travels on its own so
+        # a client can act on it -- open the meeting a notification is about
+        # -- without parsing it back out of a sentence.
+        self._on_event = on_event or (lambda kind, uid, detail: None)
         # Injectable so the queue's own logic -- ordering, refusal, partial
         # publication, interruption -- is testable without a GPU or a model.
         self._worker_factory = worker_factory or (lambda cfg, model: _Worker(cfg, model))
@@ -196,6 +204,16 @@ class TranscriptionPipeline:
 
             self._handles = ThreadLocalStore(self._config.db_path)
         return self._handles.handle
+
+    def release_thread_store(self) -> None:
+        """Close the calling thread's own handle, for a thread about to end.
+
+        The owner thread borrows the caller's store and has nothing of its own
+        to release; any other thread that asked this pipeline something, an
+        HTTP request of the service in practice, opened one here.
+        """
+        if self._handles is not None and threading.current_thread() is not self._owner:
+            self._handles.release()
 
     def _close_thread_store(self) -> None:
         if self._handles is not None:
@@ -235,7 +253,7 @@ class TranscriptionPipeline:
             )
 
         self._db.set_attempt_state(meeting_uid, AttemptState.QUEUED)
-        self._on_event("enfileirada", meeting_uid)
+        self._on_event("enfileirada", meeting_uid, "")
 
     def recover_pending(self) -> int:
         """Return anything that was mid-flight to the queue, discarding its work.
@@ -331,7 +349,7 @@ class TranscriptionPipeline:
                 self._process(meeting)
             except _Interrupted:
                 self._db.set_attempt_state(meeting.uid, AttemptState.QUEUED)
-                self._on_event("interrompida", meeting.uid)
+                self._on_event("interrompida", meeting.uid, "")
             except Exception as exc:
                 if self._db.get_meeting(meeting.uid) is None:
                     # Deleted once its transcript was published, while the
@@ -340,7 +358,7 @@ class TranscriptionPipeline:
                 self._db.set_attempt_state(
                     meeting.uid, AttemptState.FAILED, f"{type(exc).__name__}: {exc}"
                 )
-                self._on_event("falhou", f"{meeting.uid}: {exc}")
+                self._on_event("falhou", meeting.uid, str(exc))
         self._release_worker()
         self._close_thread_store()
         self._idle.set()
@@ -383,7 +401,7 @@ class TranscriptionPipeline:
             )
             return
 
-        self._on_event("transcrevendo", meeting.uid)
+        self._on_event("transcrevendo", meeting.uid, "")
 
         vocabulary = self._config.vocabulary
         language = self._config.language
@@ -421,7 +439,7 @@ class TranscriptionPipeline:
         if not ok:
             self._db.discard_revision(revision.id, reason or "todas as trilhas falharam")
             self._db.set_attempt_state(meeting.uid, AttemptState.FAILED, reason)
-            self._on_event("falhou", f"{meeting.uid}: {reason}")
+            self._on_event("falhou", meeting.uid, reason)
             return
 
         outcome = self._db.publish_revision(
@@ -430,7 +448,7 @@ class TranscriptionPipeline:
 
         if outcome.published:
             self._db.set_attempt_state(meeting.uid, AttemptState.NONE, reason)
-            self._on_event("pronta", meeting.uid)
+            self._on_event("pronta", meeting.uid, "")
             self._regenerate_exports(meeting.uid)
         else:
             # Refused because what the meeting already had was more complete.
@@ -438,7 +456,7 @@ class TranscriptionPipeline:
             self._db.set_attempt_state(
                 meeting.uid, AttemptState.FAILED, outcome.message
             )
-            self._on_event("preservada", f"{meeting.uid}: {outcome.message}")
+            self._on_event("preservada", meeting.uid, outcome.message)
 
     def _regenerate_exports(self, meeting_uid: str) -> None:
         try:
@@ -446,7 +464,7 @@ class TranscriptionPipeline:
 
             regenerate_exports(self._db, meeting_uid)
         except Exception as exc:  # exports are derived; never fail the meeting
-            self._on_event("aviso", f"exportacoes de {meeting_uid}: {exc}")
+            self._on_event("aviso", meeting_uid, f"exportacoes: {exc}")
 
 
 __all__ = ["INTERRUPT_BUDGET_S", "QueueRefused", "TrackOutcome", "TranscriptionPipeline"]

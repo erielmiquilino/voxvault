@@ -26,3 +26,10 @@ target/
 # Ambiente
 .env
 .env.local
+
+# Configuracao local de build: nesta maquina os artefatos vao para outro volume.
+# O CI usa o target padrao.
+voxvault-app/src-tauri/.cargo/config.toml
+
+# Recursos do instalador, baixados e conferidos por tools/preparar-recursos.ps1.
+voxvault-app/src-tauri/recursos/

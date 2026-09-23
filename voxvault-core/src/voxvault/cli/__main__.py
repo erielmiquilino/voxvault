@@ -182,6 +182,24 @@ def _build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--vocabulary", default=None)
     bench.set_defaults(handler=_cmd_bench)
 
+    modelos = sub.add_parser(
+        "models", help="Modelos de transcricao: baixar para usar sem rede."
+    )
+    modelos_sub = modelos.add_subparsers(dest="models_command", required=True)
+    baixar = modelos_sub.add_parser(
+        "download",
+        help="Baixa um modelo para a pasta de dados, retomando o que ja existe.",
+    )
+    baixar.add_argument(
+        "--model", default=None, metavar="MODELO",
+        help="Modelo a baixar (padrao: o escolhido para este hardware).",
+    )
+    baixar.add_argument(
+        "--json", action="store_true",
+        help='Progresso em linhas JSON {"baixado": n, "total": t}, a cada 250 ms.',
+    )
+    modelos.set_defaults(handler=_cmd_models)
+
     config_cmd = sub.add_parser(
         "config", help="Mostra ou altera a configuracao compartilhada."
     )
@@ -210,6 +228,11 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--force", action="store_true",
         help="Com --stop, encerra mesmo havendo gravacao ou fila pendente.",
+    )
+    serve.add_argument(
+        "--json", action="store_true",
+        help="Com --status, responde em JSON (em_execucao, gravacao_ativa, "
+             "fila_pendente, diretorio_de_dados).",
     )
     serve.set_defaults(handler=_cmd_serve)
 
@@ -297,7 +320,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if report.failed else 0
 
 
-def _service_call(rendezvous, method: str, route: str, body: dict | None = None):
+def _service_call(
+    rendezvous, method: str, route: str, body: dict | None = None, *, timeout: float = 180
+):
     """One request to the running service."""
     import json
     import urllib.error
@@ -312,7 +337,7 @@ def _service_call(rendezvous, method: str, route: str, body: dict | None = None)
     request.add_header(SECRET_HEADER, rendezvous.segredo)
     request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as exc:
         try:
@@ -1042,7 +1067,9 @@ def _cmd_queue(args: argparse.Namespace) -> int:
     try:
         pipeline = TranscriptionPipeline(
             config, store,
-            on_event=lambda kind, detail: sys.stdout.write(f"  {kind}: {detail}\n"),
+            on_event=lambda kind, uid, detail: sys.stdout.write(
+                f"  {kind}: {uid}" + (f": {detail}" if detail else "") + "\n"
+            ),
         )
         recovered = pipeline.recover_pending()
         if recovered:
@@ -1219,6 +1246,8 @@ def _cmd_config(args: argparse.Namespace) -> int:
         if args.json:
             import json
 
+            from ..engine.capability import effective_model
+
             sys.stdout.write(json.dumps({
                 "arquivo": str(user_config_path()),
                 "valores": {
@@ -1228,6 +1257,9 @@ def _cmd_config(args: argparse.Namespace) -> int:
                     }
                     for nome in sorted(config.sources)
                 },
+                # With the model left at its default, the hardware picks it;
+                # the settings screen shows that one, not the constant.
+                "modelo_efetivo": effective_model(config),
             }, ensure_ascii=False, indent=2))
             sys.stdout.write("\n")
             return 0
@@ -1300,6 +1332,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     if args.stop:
         return _stop_service(force=args.force)
 
+    if args.status and args.json:
+        return _status_json(config)
+
     if args.status:
         found = live_rendezvous()
         if found is None:
@@ -1342,6 +1377,123 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         sys.stdout.write("\nEncerrando o servico.\n")
         service.shutdown()
         return 0
+
+
+def _status_json(config) -> int:
+    """What the uninstaller asks before removing anything.
+
+    Answered in both cases with exit status 0, because both are answers: the
+    JSON says whether a service runs and, if it does, whether it is recording.
+    Asked with a short deadline -- an uninstaller must not sit for minutes
+    behind a service that stopped answering.
+    """
+    import json
+
+    from ..service.rendezvous import live_rendezvous
+
+    answer = {
+        "em_execucao": False,
+        "gravacao_ativa": False,
+        "fila_pendente": 0,
+        "diretorio_de_dados": str(config.data_dir),
+    }
+    found = live_rendezvous()
+    status, health = 0, {}
+    if found is not None:
+        try:
+            status, health = _service_call(found, "GET", "/saude", timeout=5)
+        except OSError as exc:
+            # Refused means nobody listens at the published address: the
+            # process id is somebody else's by now. A timeout is a service
+            # that is there and not answering, which still counts as running.
+            if isinstance(getattr(exc, "reason", exc), ConnectionRefusedError):
+                found = None
+    if found is not None:
+        answer["em_execucao"] = True
+        answer["diretorio_de_dados"] = found.diretorio_de_dados or answer["diretorio_de_dados"]
+        if status == 200:
+            answer["gravacao_ativa"] = bool(health.get("gravacao_ativa"))
+            answer["fila_pendente"] = int(health.get("fila_pendente") or 0)
+    sys.stdout.write(json.dumps(answer, ensure_ascii=False) + "\n")
+    return 0
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    """Download a model: the one command of the core that goes online.
+
+    ``--json`` prints one line per quarter of a second, ``{"baixado": n,
+    "total": t}``, and a last one with ``concluido``, ``modelo`` and
+    ``caminho``; a failure is ``{"erro": ...}`` and exit status 1. An
+    interrupted download resumes on the next run, from what is on disk.
+    """
+    import json
+
+    from ..engine.capability import effective_model
+    from ..engine.models import download, installed, repository
+
+    config = _load(args)
+    model = args.model or effective_model(config)
+    try:
+        repository(model)
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 1
+
+    present = installed(config.models_dir, model)
+    if present is not None:
+        # Complete already: nothing to fetch, and no reason to go online.
+        if args.json:
+            sys.stdout.write(json.dumps({
+                "concluido": True, "modelo": model, "caminho": str(present),
+                "ja_presente": True,
+            }, ensure_ascii=False) + "\n")
+        else:
+            sys.stdout.write(f"Modelo {model} ja esta completo em {present}\n")
+        return 0
+
+    def progress(done: int, total: int) -> None:
+        if args.json:
+            sys.stdout.write(json.dumps({"baixado": done, "total": total}) + "\n")
+            sys.stdout.flush()
+        else:
+            share = (done / total * 100) if total else 0
+            sys.stdout.write(
+                f"\r  {model}: {share:5.1f}%  ({done / 1e6:,.0f} de {total / 1e6:,.0f} MB)"
+            )
+            sys.stdout.flush()
+
+    try:
+        path = download(config.models_dir, model, on_progress=progress)
+    except Exception as exc:
+        reason = _network_reason(exc)
+        if args.json:
+            sys.stdout.write(json.dumps({"erro": reason}, ensure_ascii=False) + "\n")
+        else:
+            sys.stderr.write(f"\n{reason}\n")
+        return 1
+    if args.json:
+        sys.stdout.write(json.dumps({
+            "concluido": True, "modelo": model, "caminho": str(path),
+        }, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(f"\nModelo {model} pronto em {path}\n")
+    return 0
+
+
+def _network_reason(exc: Exception) -> str:
+    """A download failure in words a person can act on."""
+    text = f"{type(exc).__name__}: {exc}"
+    lowered = text.lower()
+    if any(term in lowered for term in (
+        "connection", "resolve", "getaddrinfo", "timed out", "timeout",
+        "proxy", "ssl", "network", "unreachable",
+    )):
+        return (
+            "Sem conexao com a internet: o download do modelo precisa alcancar "
+            "huggingface.co. Conecte-se e tente de novo -- o que ja foi baixado "
+            f"e aproveitado. ({text})"
+        )
+    return f"O download do modelo falhou: {text}"
 
 
 def _cmd_detect(args: argparse.Namespace) -> int:
@@ -1563,10 +1715,25 @@ def _force_utf8_output() -> None:
             pass
 
 
+def _offline_unless_downloading(args: argparse.Namespace) -> None:
+    """Keep every command of the core off the network, except the download.
+
+    Set before anything imports the Hugging Face client, which reads it once.
+    A child process -- the service's inference worker -- inherits it.
+    """
+    import os
+
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    downloading = args.command == "models" and getattr(args, "models_command", "") == "download"
+    if not downloading:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_output()
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _offline_unless_downloading(args)
     try:
         return args.handler(args)
     except KeyboardInterrupt:

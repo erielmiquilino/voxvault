@@ -68,10 +68,10 @@ O ambiente fica fora da pasta de instalação porque a atualização do NSIS sub
 `paths::core_root()` segue esta ordem:
 
 1. `VOXVAULT_CORE_ROOT`;
-2. `resource_dir()\recursos\nucleo`;
-3. só em builds de depuração (`cfg!(debug_assertions)`), a subida a partir do executável e do `CARGO_MANIFEST_DIR`.
+2. só em builds de depuração (`cfg!(debug_assertions)`), a subida a partir do executável e do `CARGO_MANIFEST_DIR`;
+3. `resource_dir()\recursos\nucleo`.
 
-Um build de release nunca mais depende do caminho de quem o compilou.
+Um build de release nunca mais depende do caminho de quem o compilou: o `CARGO_MANIFEST_DIR` nem entra no binário dele. Em depuração, o checkout vem antes da cópia dos recursos porque o próprio build copia os recursos do bundle para junto do executável, e essa cópia não tem ambiente de desenvolvimento.
 
 `paths::core_executable()` usa `%USERPROFILE%\.voxvault\runtime\ambiente\Scripts\voxvault.exe` quando esse arquivo existe. Senão, em depuração, `<núcleo>\.venv\Scripts\voxvault.exe`, que é o fluxo de desenvolvimento de hoje.
 
@@ -79,19 +79,22 @@ Um build de release nunca mais depende do caminho de quem o compilou.
 
 | Etapa | Comando | Pulada quando |
 |---|---|---|
-| `interpretador` | `uv python install 3.12` | já instalado em `runtime\python` |
+| `interpretador` | `uv python install 3.12 --no-bin --no-registry` | já instalado em `runtime\python` |
 | `dependencias` | `uv sync --extra engine --extra mcp` | em dia (o `sync` confirma em segundos) |
 | `gpu` | `uv sync --extra engine --extra mcp --extra cuda` | sem GPU adequada (decisão 4) |
 | `configuracao` | grava `data_dir` no `config.json` | já gravado com o mesmo valor |
-| `modelo` | `voxvault models download --json` | arquivos completos em `models\` |
+| `modelo` | `voxvault models download --json` | arquivos completos em `models\` (o próprio comando também confere o disco antes de ir à rede) |
 | `verificacao` | `voxvault doctor --json` | nunca |
 
-- **Opções comuns do `uv`:** `--project <recursos\nucleo> --frozen --no-dev --no-editable --python-preference only-managed`, com o ambiente `UV_PROJECT_ENVIRONMENT=runtime\ambiente`, `UV_PYTHON_INSTALL_DIR=runtime\python`, `UV_CACHE_DIR=runtime\cache` e `UV_NO_CONFIG=1`.
+- **Opções comuns do `uv`:** `--project <recursos\nucleo> --frozen --no-dev --no-editable --python-preference only-managed`, com o ambiente `UV_PROJECT_ENVIRONMENT=runtime\ambiente`, `UV_PYTHON_INSTALL_DIR=runtime\python`, `UV_CACHE_DIR=runtime\cache`, `UV_NO_CONFIG=1` e `UV_PYTHON_DOWNLOADS=manual`.
+- **Sem efeitos fora do `runtime`.** Medido no ensaio: sem `--no-bin`, o `uv python install` tenta pôr um `python3.12.exe` em `~\.local\bin`; sem `--no-registry`, registra o interpretador em `HKCU\Software\Python` (PEP 514). E `uv python uninstall` com outro diretório de instalação removeu da visão do registro a entrada de um interpretador que não era dele. Por isso o preparo passa as duas opções, nunca desinstala interpretador, e `UV_PYTHON_DOWNLOADS=manual` impede que um `sync` baixe interpretador por conta própria.
+- **Na troca de GPU.** Com GPU, a etapa `dependencias` roda com `--inexact`, para não remover as bibliotecas CUDA que a etapa `gpu` religaria em seguida; sem GPU, roda exata e remove as que tenham sobrado.
+- **Serviço em execução.** Um serviço iniciado do próprio ambiente segura o lançador e as bibliotecas nativas abertos, e o `sync` de uma atualização não conseguiria substituí-los. Antes das etapas do `uv`, o preparo pede `serve --stop` a esse serviço, que recusa durante uma gravação ou com fila pendente; a recusa vira "encerre a gravação pela bandeja e clique em Retomar". Enquanto o preparo roda, o supervisor do aplicativo não inicia o serviço.
 - **Ambiente herdado.** `VIRTUAL_ENV`, `PYTHONPATH` e `PYTHONHOME` são removidos antes de chamar o `uv`.
 - **Limpeza.** Ao fim do `sync`, `uv cache prune` libera o que o ambiente não usa.
 - **Por que `--no-editable`:** o ambiente não fica apontando para a pasta de instalação, que a atualização substitui. Reinstalar o pacote do núcleo depois de uma atualização custa segundos.
 - **Carimbo.** Só a conclusão da `verificacao` grava `runtime\preparado.json`, com `versao_app`, `sha256_lock`, `gpu`, `modelo` e `concluido_em`. Na abertura, versão e lock iguais ao instalado significam pronto. Qualquer diferença roda as etapas de novo, e as concluídas passam em segundos, sem download. **Retomar é rodar de novo.**
-- **Progresso.** As linhas de progresso do `uv` (stderr) são repassadas à tela.
+- **Progresso.** As linhas do `uv` (stderr) são repassadas à tela, e a quantidade é medida no disco: o crescimento do cache do `uv` contra o `bytes_em_disco` de `preparo.json`, uma vez por segundo, porque o `uv` sem terminal não informa bytes.
 - **Erros de rede.** Os do `uv` — resolução de nome, recusa de conexão, TLS — viram "sem conexão com a internet: o preparo precisa baixar X; conecte-se e clique em Retomar".
 
 ### 4. Hardware e escolha de modelo antes de existir Python
@@ -116,7 +119,8 @@ A tela mostra esses números. O espaço exigido por volume é ambiente mais 20% 
 
 ### 6. Download de modelo explícito, e motor só do disco
 
-- **Download.** Novo `voxvault models download [--model M] [--json]`: chama `huggingface_hub.snapshot_download` com o repositório do mapeamento do faster-whisper, `cache_dir=models_dir`, `allow_patterns` só com os arquivos do modelo e uma classe de progresso que emite linhas JSON `{"baixado": n, "total": t}` a cada 250 ms. Downloads interrompidos são retomados pela própria biblioteca.
+- **Download.** Novo `voxvault models download [--model M] [--json]`, com um download próprio do núcleo, e não `snapshot_download`. Medido: o `huggingface_hub` 1.32 baixa cada arquivo para um temporário de nome único por processo e o apaga na falha (PR 4228), então um download interrompido recomeçava do zero, e um processo morto deixava 1,5 GB órfãos. O núcleo pede à API do Hub o commit do ramo padrão e os arquivos do modelo, com tamanho e hash; baixa cada um para um parcial de nome fixo, continuado com `Range: bytes=<n>-` (o `huggingface.co` redireciona para a CDN `*.hf.co`, que responde `206`); confere o SHA-256 dos arquivos LFS e o hash de blob do git dos pequenos; e só então move para `snapshots/<commit>/` e grava `refs/main`, a referência pela qual o motor acha o snapshot. O progresso sai em linhas JSON `{"baixado": n, "total": t}` a cada 250 ms, contado nos bytes recebidos mais o que os parciais já tinham. Verificado de verdade: o `large-v3-turbo` interrompido com 563 MB retomou desses 563 MB, terminou com a soma conferida e sem sobra em disco, e carregou no motor sem rede. Um modelo completo no disco responde `ja_presente` sem abrir conexão.
+- **Completo é ter os arquivos.** O snapshot existe desde o primeiro arquivo baixado, então "instalado" é o snapshot com `config.json`, `model.bin`, `tokenizer.json` e um `vocabulary.*`. O diagnóstico ganha o item `modelo`, com essa mesma conferência.
 - **Carregamento.** O motor passa a carregar com `WhisperModel(..., local_files_only=True)`, e todo processo do núcleo define `HF_HUB_OFFLINE=1` e `HF_HUB_DISABLE_TELEMETRY=1`, exceto o comando de download. Modelo ausente vira `MissingPrerequisiteError` com a ação "baixe o modelo em Configurações".
 - **Troca de modelo.** Trocar o modelo em Configurações passa a disparar o download com progresso, reutilizando o componente da etapa `modelo`, antes de gravar a escolha.
 
@@ -133,7 +137,7 @@ A tela mostra esses números. O espaço exigido por volume é ambiente mais 20% 
 | `compress_lossless` | soundfile WAV → FLAC `PCM_16`, `compression_level` 8 |
 | `verify_lossless` | leitura dos dois por soundfile e comparação amostra a amostra |
 
-O item "Decodificador de mídia" do diagnóstico passa a verificar a importação de `av` e a decodificação de um trecho sintético.
+O item "Decodificador de mídia" do diagnóstico passa a verificar a importação de `av` e a decodificação de um trecho sintético. Medido: 30 minutos de AAC estéreo a 48 kHz decodificam em 7 s acrescentando 9 MB ao processo.
 
 ### 8. Padrão de modelo por hardware no núcleo
 
@@ -153,16 +157,17 @@ Em `_resolve_placement`, quando a origem do campo `model` é o padrão embutido,
   - `bundle.windows.nsis.installerHooks = "windows/ganchos.nsh"`;
   - WebView2 pelo bootstrapper padrão.
 - **`NSIS_HOOK_PREUNINSTALL`**, só fora do modo de atualização. A variável exata é conferida no `installer.nsi` gerado; é uma tarefa. Faz, em ordem:
-  1. consulta `voxvault.exe serve --status --json`, uma opção nova que devolve `gravacao_ativa` e `fila_pendente`: com gravação ativa → `MessageBox` "Há uma gravação em andamento; encerre-a antes de desinstalar" + `Abort`. Senão, `voxvault.exe serve --stop --force`. A fila pendente não impede a desinstalação: a spec só a recusa durante uma gravação;
-  2. lê o `data_dir` efetivo com `voxvault.exe config --json` via `nsExec::ExecToStack`;
-  3. remove `$PROFILE\.voxvault` e o valor `VoxVault` em `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`;
+  1. consulta `voxvault.exe serve --status --json`, uma opção nova que devolve `em_execucao`, `gravacao_ativa`, `fila_pendente` e `diretorio_de_dados`, com prazo de 5 s: com gravação ativa → `MessageBox` "Há uma gravação em andamento; encerre-a antes de desinstalar" + `Abort`. A fila pendente não impede a desinstalação: a spec só a recusa durante uma gravação;
+  2. guarda o `diretorio_de_dados` dessa mesma resposta, que é o efetivo;
+  3. **no `NSIS_HOOK_POSTUNINSTALL`**, depois de o modelo do Tauri ter fechado o aplicativo — que, aberto, reiniciaria o serviço —, `voxvault.exe serve --stop --force` e a remoção de `$PROFILE\.voxvault` (com `/REBOOTOK`, para o que um cliente MCP ainda segure). O valor `VoxVault` em `HKCU\...\Run` o próprio modelo do Tauri já remove fora de atualização;
   4. ao final, mostra "Suas gravações foram mantidas em <pasta>".
+- **Conferido no `installer.nsi` gerado:** a variável é `$UpdateMode` (o desinstalador recebe `/UPDATE` numa atualização), e o atalho do menu Iniciar já recebe o AUMID `${BUNDLEID}`, `com.erielmiquilino.voxvault`, por `SetLnkAppUserModelId`: o `NSIS_HOOK_POSTINSTALL` não precisa defini-lo.
 - **Atalho do menu Iniciar.** O AUMID dele precisa ser o identificador `com.erielmiquilino.voxvault`, do qual as notificações dependem. Isso é conferido no `installer.nsi` gerado; se o modelo do Tauri não o fizer, o `NSIS_HOOK_POSTINSTALL` o define.
 
 ### 11. Recursos de terceiros fixados
 
 - **`voxvault-app/tools/recursos.json`:** fixa a versão do uv e a SHA-256 de `uv-x86_64-pc-windows-msvc.zip`. A versão é a estável mais recente no início da implementação, publicada pela Astral em `github.com/astral-sh/uv/releases`, e é a mesma em três lugares: o que gera o `uv.lock`, o `setup-uv` do CI e o `uv.exe` embutido. Trocar a versão é editar esse arquivo e regenerar o lock no mesmo commit.
-- **`tools/preparar-recursos.ps1`:** baixa, confere a soma (divergência → erro que nomeia o componente) e extrai `uv.exe` em `src-tauri/recursos/uv/`, que é ignorado pelo git. Depois gera `preparo.json`. Roda no `beforeBuildCommand`, depois de `npm run build`.
+- **`voxvault-app/tools/preparar-recursos.ps1`:** baixa, confere a soma (divergência → erro que nomeia o componente) e extrai `uv.exe` em `src-tauri/recursos/uv/`, que é ignorado pelo git. Depois gera `preparo.json`. Roda no `beforeBuildCommand`, depois de `npm run build`. Os tamanhos de `preparo.json` saem do lock, com dois fatores de expansão medidos em ambientes feitos deste lock (2,87 para as dependências, 1,53 para o CUDA) e o interpretador medido (3.12.14: 21,98 MB de download, 63,3 MB instalado).
 - **`uv.lock`:** passa a ser versionado. `uv lock --check` entra no CI.
 
 ### 12. CI e release no GitHub Actions
@@ -226,13 +231,13 @@ A revisão pré-publicação procura:
 
 ### 15. Verificação de "máquina limpa" sem mexer no perfil real
 
-Todo caminho por usuário do VoxVault deriva de `USERPROFILE`, e os do uv são definidos explicitamente. Então o aplicativo instalado, executado com `USERPROFILE` apontando para uma pasta vazia e `PATH` sem Python nem ffmpeg, reproduz um primeiro uso sem tocar na instalação real do usuário. O caminho de CPU é exercitado com `VOXVAULT_FORCAR_CPU=1`, lido só pela detecção de hardware do preparo e documentado como chave de diagnóstico. Uma transcrição com `HTTPS_PROXY=http://127.0.0.1:9` prova que nenhuma rede é usada depois do preparo.
+Todo caminho por usuário do VoxVault deriva de `USERPROFILE`, e os do uv são definidos explicitamente. Então o aplicativo instalado, executado com `USERPROFILE` apontando para uma pasta vazia e `PATH` sem Python nem ffmpeg, reproduz um primeiro uso sem tocar na instalação real do usuário. O caminho de CPU é exercitado com `VOXVAULT_FORCAR_CPU=1`, lido pela detecção de hardware do preparo e também pelo núcleo, para que o ambiente preparado e a transcrição concordem; é documentado como chave de diagnóstico. Uma transcrição com `HTTPS_PROXY=http://127.0.0.1:9` prova que nenhuma rede é usada depois do preparo.
 
 ## Risks / Trade-offs
 
 - [O executável sem assinatura dispara o SmartScreen] → documentado nas notas e no README com o caminho "Mais informações → Executar assim mesmo". A assinatura fica fora de escopo, como no `ia-monitor`.
 - [O primeiro uso baixa gigabytes] → os tamanhos aparecem antes de começar, o download é retomável, e o caminho de CPU evita os 2 GB de CUDA.
-- [Antivírus bloqueando o `uv.exe` ou o interpretador baixado] → a falha do `uv` é mostrada com a causa, e o README orienta a exceção.
+- [Antivírus bloqueando o `uv.exe` ou o interpretador baixado] → a falha do `uv` é mostrada com a causa (os códigos 225 e 226 do Windows viram "o antivírus bloqueou"), e o README orienta a exceção. Aconteceu no desenvolvimento: o Kaspersky marcou como `PDM:Trojan.Win32.Generic`, por comportamento, uma cópia do `preparar-recursos.ps1` que baixava, conferia, extraía e executava o `uv.exe`.
 - [O nome da variável de modo de atualização no NSIS do Tauri] → uma tarefa confere o `installer.nsi` gerado antes de confiar nela; o teste de atualização de 0.1.0 para uma 0.1.1 de ensaio prova que o ambiente sobrevive.
 - [Testes do núcleo que dependem de `D:\VoxVault` como padrão] → a troca do padrão (decisão 9) atualiza esses testes, e o CI numa máquina sem `D:\VoxVault` prova a independência.
 - [Um PR de terceiros executando código no runner] → o `ci.yml` não usa segredos e tem só permissão de leitura; o `release.yml` só roda por tag ou dispatch do dono.

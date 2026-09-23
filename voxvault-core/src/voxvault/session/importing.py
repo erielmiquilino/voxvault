@@ -65,8 +65,8 @@ def import_media(
     if duration_ms is None:
         raise MediaDecodeError(
             f"O decodificador de midia nao conseguiu ler '{source}'. "
-            f"Verifique se o ffmpeg esta instalado e se o arquivo nao esta "
-            f"corrompido."
+            f"Verifique se o arquivo nao esta corrompido e se e de um formato "
+            f"de audio ou video."
         )
     if duration_ms <= 0:
         raise ImportError_(

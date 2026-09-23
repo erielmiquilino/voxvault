@@ -139,8 +139,9 @@ A bandeja abre, alterna gravação e fecha; o atalho **Alt+Shift+R** passa pelo
 serviço, então uma gravação iniciada pela linha de comando é encerrada pelo
 mesmo atalho. A sugestão de início nunca começa a gravar sozinha.
 
-Limite declarado: a bandeja morre com a janela, então a detecção só observa
-enquanto o aplicativo está aberto.
+O limite que esta fase declarou — a bandeja morria com a janela, e a detecção
+só observava com o aplicativo aberto — caiu com a bandeja residente, descrita
+abaixo.
 
 O sinal vem do mesmo registro que o Windows usa para o indicador "um aplicativo
 está usando seu microfone". Ele dá caminho de executável e dois instantes, e
@@ -216,6 +217,151 @@ marcando a reunião como falha; se a reunião já não existia, essa marcação
 também falhava, e a exceção derrubava a linha de execução da fila. Agora uma
 reunião que sumiu é simplesmente deixada para trás. Os dois casos têm teste que
 falha na versão anterior.
+
+## Bandeja residente
+
+**Implementada; verificada executando no que não depende de áudio.** Fechar ou
+minimizar a janela a destrói, e o processo continua só com a bandeja, o atalho,
+as notificações e uma linha de supervisão. Um WebView2 escondido não libera
+nada, então a janela não é escondida: deixa de existir, e é refeita na última
+tela quando volta. "Sair do VoxVault" é o único jeito de encerrar o processo, e
+nenhum deles encerra o serviço, que é o dono da fila.
+
+### Verificado executando
+
+- **Recolher.** Fechar e minimizar deixaram zero processos do WebView2, nenhum
+  botão na barra de tarefas e o aplicativo vivo com 13 MB. O aviso do primeiro
+  recolhimento apareceu uma única vez, inclusive através de um reinício.
+- **Voltar.** Reabrir restaurou a rota aberta — uma reunião — em 522 ms e
+  878 ms até o primeiro desenho, contra o teto de 2 s. Uma segunda instância
+  recriou a janela e não deixou processo novo.
+- **Gravação sem janela.** Fechar a janela durante uma gravação não perguntou
+  nada e a gravação seguiu (173 s → 181,5 s). Encerrar pelo menu da bandeja
+  levou o tooltip a "ocioso" em cerca de 1 s, sem abrir janela, com exatamente
+  uma notificação de gravação encerrada.
+- **Ícone, tooltip e menu.** As quatro formas foram capturadas da bandeja real;
+  o tooltip avança a cada segundo gravando; a habilitação do menu confere nos
+  estados gravando, ocioso e falha ("Iniciar gravação (serviço indisponível)"
+  desabilitado).
+- **Notificações.** As seis categorias aparecem; uma categoria desligada é
+  respeitada; uma transcrição concluída com o aplicativo na bandeja notifica, e
+  abrir o aplicativo depois de transcrições concluídas não notifica nada.
+- **Início com o Windows e atalho.** Ligar cria `HKCU\...\Run\VoxVault` com
+  `--bandeja` e desligar remove; `--bandeja` sobe só na bandeja. Trocar o atalho
+  vale na hora, uma combinação ocupada mantém a anterior, e a escolha sobrevive
+  a um reinício.
+
+### Custo medido
+
+`tools/medir-custo.ps1 -Janela bandeja`, 10 minutos ocioso na bandeja, 114
+amostras: **0,02% de processador em média e 0,10% de pico, 65,0 MB em média e
+65,4 MB de pico** — o serviço com 51,8 MB, o aplicativo com 13,3 MB — contra
+tetos de 1% e 100 MB. Com a janela aberta, a medição da Fase 3 continua valendo.
+
+### Três defeitos encontrados medindo
+
+**Uma conexão SQLite vazada por requisição.** A primeira medição subiu de
+84,6 MB para 106,1 MB em 10 minutos. O servidor HTTP do serviço abre uma linha
+de execução por requisição, e o armazenamento por linha de execução abria uma
+conexão nova em cada uma sem nunca fechá-la: uns 2 MB por minuto sob a consulta
+de 5 s do aplicativo. Cada requisição agora libera a sua ao terminar, e um
+teste que falha na versão anterior confere que 80 consultas, em linhas de
+execução novas como as do servidor, não deixam nenhuma conexão aberta.
+
+**Um início que dava certo era relatado como falha.** O cliente do aplicativo
+esperava 1,5 s por qualquer resposta; abrir os dispositivos passa disso, e o
+aplicativo dizia "falhou" enquanto a gravação começava. Cada rota tem agora o
+seu prazo — 15 s para iniciar, 180 s para encerrar — e um prazo esgotado é dito
+como tal, não como recusa.
+
+**Três inícios empilhados.** Com o serviço de áudio do Windows travado, pedidos
+repetidos ficavam todos presos em `IAudioClient::Initialize`. O serviço recusa
+agora um segundo início enquanto o primeiro abre os dispositivos, e o aplicativo
+não dispara outro enquanto um está em curso.
+
+### Em aberto
+
+O serviço de áudio do Windows desta máquina caiu às 09:46 de 23/09 e, reiniciado
+pelo próprio sistema, passou a recusar a abertura de qualquer dispositivo, em
+qualquer processo (`0x80040154` e `0x800706CC`). Ficaram por verificar, até ele
+voltar: o início positivo pela bandeja e pelo atalho em tela cheia, a gravação
+iniciada por `voxvault record` mudando o ícone, os avisos de captura, a
+sugestão de reunião detectada com o botão "Gravar", a confirmação de "Sair"
+durante uma gravação e a medição de 60 minutos gravando na bandeja. O clique
+numa notificação não foi exercido pelo sistema, porque o "Não incomodar" estava
+ligado; a decisão que ele aciona foi separada numa função e testada.
+
+## Distribuição pública
+
+**Implementada; verificada até o instalador gerado. A instalação, o preparo
+completo e a publicação esperam decisão do usuário.** O instalador leva o
+núcleo e o `uv`, não Python: o preparo do primeiro uso monta o ambiente em
+`%USERPROFILE%\.voxvault\runtime` a partir do `uv.lock` versionado.
+
+### Verificado executando
+
+- **Instalador.** 13,06 MB contra o teto de 40 MB, instalação por usuário, em
+  português. O conteúdo, conferido no próprio pacote: `recursos\nucleo` com os
+  55 `.py` na estrutura do pacote, `pyproject.toml`, `uv.lock`, `README.md` e
+  `LICENSE`, nenhum `__pycache__`; `recursos\uv\uv.exe`, `recursos\preparo.json`,
+  `LICENSE` e `THIRD-PARTY-NOTICES.md` na raiz. O executável de release não
+  contém mais o caminho de compilação.
+- **Lock reproduzível.** `uv.lock` gerado com o uv 0.12.18 fixado; `uv lock
+  --check` passa; um ambiente novo feito dele, com o Python 3.12.14 gerenciado,
+  roda a seleção do CI: 527 testes passando.
+- **Sem ffmpeg.** A suíte inteira passa com o ffmpeg fora do `PATH`, e o
+  núcleo não o menciona mais. `.opus`, `.m4a`, `.mp4` com vídeo e `.wav` a
+  44,1 kHz, sintetizados pelo próprio PyAV, decodificam para 16 kHz mono com o
+  tom no lugar; 30 minutos de AAC estéreo decodificam em 7 s acrescentando
+  9 MB ao processo; um FLAC com uma amostra alterada é reprovado.
+- **Sem rede.** Uma transcrição real, na GPU, conclui com `HTTPS_PROXY` e
+  `HTTP_PROXY` apontando para uma porta morta, e um modelo ausente vira erro
+  tipado com a ação, sem nenhuma tentativa de conexão.
+- **Download de modelo retomável.** O `large-v3-turbo`, baixado de verdade
+  para uma pasta vazia e interrompido com 563 MB, retomou desses 563 MB,
+  terminou com o SHA-256 conferido, sem sobra em disco, e carregou no motor sem
+  rede. A troca de modelo nas Configurações baixou o `medium` com progresso
+  (258 MB, 961 MB de 1,4 GB) e só gravou a escolha ao terminar.
+- **Tela de preparo.** Lida pela automação de interface do Windows, num perfil
+  temporário: a GPU encontrada e o `large-v3`; a pasta `D:\VoxVault` mantida
+  como padrão anterior porque tem dados; 21,0 MB de interpretador, 95,9 MB de
+  dependências e 1,3 GB de CUDA, com o modelo já presente; o espaço pedido por
+  volume. Com `VOXVAULT_FORCAR_CPU=1`, sem CUDA e com o turbo na CPU. Com a
+  pasta no volume E:, de 2,3 GB livres, a recusa "faltam 1,5 GB no volume E:"
+  e o botão desabilitado.
+- **Recursos fixados.** Uma soma SHA-256 adulterada em `recursos.json`
+  interrompe o build nomeando o uv, sem extrair nada; a correta baixa, confere
+  e extrai. `conferir-versao.ps1` aprova `v0.1.0` e reprova `v0.2.0` nomeando
+  os cinco componentes.
+- **Capturas.** `docs/imagens/` tem Gravação, Biblioteca e Reunião, tiradas do
+  aplicativo apontado para reuniões fictícias geradas por
+  `tools/dados-de-demonstracao.py`, e os quatro ícones da bandeja.
+
+### Três defeitos encontrados ao executar
+
+**A retomada do download não existia mais.** O `huggingface_hub` 1.x passou a
+baixar cada arquivo para um temporário de nome único e a apagá-lo na falha: o
+modelo interrompido recomeçava do zero, e um processo morto deixava 1,5 GB
+órfãos. O núcleo agora baixa por conta própria, com `Range` sobre um parcial de
+nome fixo e o hash do repositório conferido.
+
+**O mapeamento dos recursos achatava o núcleo.** Um glob no `bundle.resources`
+pôs os 55 `.py` numa pasta só, com dez `__init__.py` sobrepostos. O build agora
+monta uma cópia limpa do núcleo e mapeia a pasta.
+
+**O plano rodava duas vezes.** A tela de preparo se replanejava ao preencher a
+própria pasta, perdia a origem "padrão anterior" e, numa atualização,
+dispararia dois preparos seguidos.
+
+### Em aberto
+
+- **O preparo completo** num perfil temporário (tarefas 5.4, 5.5 e o progresso
+  da 6.1) e os testes de máquina limpa (10.1 a 10.3): o `uv` baixa e executa um
+  interpretador, e o antivírus desta máquina marcou esse tipo de comportamento
+  num ensaio do build.
+- **Instalar, desinstalar e atualizar** o aplicativo nesta máquina (7.2 a 7.4).
+- **Publicar:** o CI e a release por dispatch dependem do repositório no
+  GitHub, e cada ação pública espera confirmação (8.3, 8.4 e 11).
 
 ## Decisões que valem ser lembradas
 
@@ -363,3 +509,9 @@ abaixo do limiar, que é o que garante que ela nunca vire silêncio inventado.
 2. **O registro do servidor MCP**, que é configuração de outro aplicativo.
 3. **O veredito de qualidade sobre a reunião real**, que a Fase 0 deixou
    explicitamente para o usuário.
+4. **O serviço de áudio do Windows desta máquina**, que desde 23/09 recusa
+   abrir qualquer dispositivo; sem ele, as verificações da bandeja que começam
+   uma gravação ficam paradas. Voltar a ele é reiniciar o serviço "Áudio do
+   Windows" como administrador, ou reiniciar a máquina.
+5. **O preparo completo, a instalação e a publicação**, cada um esperando uma
+   decisão: ver [Distribuição pública](#distribuição-pública).

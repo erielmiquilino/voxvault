@@ -31,13 +31,24 @@ from .base import (
 )
 from .capability import (
     Situation,
+    default_model_for,
+    model_is_default,
     probe_inference,
+    query_nvidia_gpu,
     required_vram_mb,
     suggest_smaller,
 )
 from .media import normalized_audio, probe_duration_ms
 
 ENGINE_NAME = "faster-whisper"
+
+
+def _model_not_on_disk(exc: Exception) -> bool:
+    """The Hugging Face client's way of saying the files are not in the cache."""
+    names = {type(e).__name__ for e in (exc, exc.__cause__, exc.__context__) if e}
+    return bool(names & {"LocalEntryNotFoundError", "EntryNotFoundError"}) or (
+        "local_files_only" in str(exc) or "cannot find the requested files" in str(exc).lower()
+    )
 
 
 class LocalWhisperEngine:
@@ -50,6 +61,9 @@ class LocalWhisperEngine:
 
     def __init__(self, config: Config, *, model: str | None = None) -> None:
         self._config = config
+        #: Nobody chose a model: the hardware decides which (see
+        #: :func:`capability.default_model_for`), once, at placement.
+        self._hardware_default = model is None and model_is_default(config)
         self._model_name = model or config.model
         self._model = None
         self._device = ""
@@ -141,8 +155,19 @@ class LocalWhisperEngine:
     # -- internals -----------------------------------------------------
 
     def _resolve_placement(self) -> None:
-        """Decide device and precision strictly by the availability matrix."""
-        capability = probe_inference(self._config, model=self._model_name)
+        """Decide device and precision strictly by the availability matrix.
+
+        With the model left at its default, the model itself is decided here
+        too, from the GPU the machine has -- and recorded as such in every
+        revision, so the transcript says what produced it.
+        """
+        if self._hardware_default:
+            gpu = query_nvidia_gpu()
+            self._model_name = default_model_for(gpu[1] if gpu else 0)[0]
+        capability = probe_inference(
+            self._config, model=self._model_name,
+            hardware_default=self._hardware_default,
+        )
 
         if not capability.transcription_available:
             if capability.situation is Situation.MODEL_TOO_LARGE:
@@ -196,15 +221,29 @@ class LocalWhisperEngine:
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+        from .models import REPOSITORIES, installed, missing_model
+
+        if self._model_name in REPOSITORIES and installed(
+            download_root, self._model_name
+        ) is None:
+            # Absent, or left half-downloaded: either way not loadable, and
+            # said as such before the runtime fails on a missing weights file.
+            raise missing_model(self._model_name, download_root)
+
         started = time.monotonic()
         try:
+            # From the disk only. A transcription never goes online: getting
+            # the model is `voxvault models download`, and nothing else.
             self._model = WhisperModel(
                 self._model_name,
                 device=self._device,
                 compute_type=self._compute_type,
                 download_root=str(download_root),
+                local_files_only=True,
             )
         except Exception as exc:
+            if _model_not_on_disk(exc):
+                raise missing_model(self._model_name, download_root) from exc
             raise self._translate_runtime_error(exc) from exc
         self._load_seconds = time.monotonic() - started
         return self._model

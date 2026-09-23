@@ -1,0 +1,101 @@
+# Verificação a cada push na main e a cada pull request.
+#
+# Existe para a proteção da branch ter o que exigir: uma regra de "checks
+# obrigatórios" sem check nenhum é só decoração.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Push seguido de push na mesma branch cancela o run anterior — ninguém
+# precisa do resultado de um commit que já foi substituído.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nenhum segredo e só leitura: um PR de fora roda aqui sem poder mexer em nada.
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    # O alvo é Windows e o código fala direto com o sistema — captura WASAPI,
+    # registro, notificações. Um verde em Linux não significaria nada.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A versão do uv é a mesma que gerou o uv.lock e a que vai dentro do
+      # instalador; ela mora num lugar só.
+      - name: Versão fixada do uv
+        id: uv
+        shell: pwsh
+        run: |
+          $versao = (Get-Content voxvault-app/tools/recursos.json -Raw | ConvertFrom-Json).uv.versao
+          "versao=$versao" >> $env:GITHUB_OUTPUT
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ steps.uv.outputs.versao }}
+
+      - name: Núcleo — dependências do lock
+        working-directory: voxvault-core
+        run: uv sync --frozen --extra dev --extra engine --extra mcp
+
+      - name: Núcleo — lock em dia com o pyproject
+        working-directory: voxvault-core
+        run: uv lock --check
+
+      - name: Núcleo — análise estática
+        working-directory: voxvault-core
+        run: uv run --frozen ruff check src tests
+
+      # Os testes que exigem dispositivo de áudio ou GPU ficam de fora: o
+      # runner não tem nenhum dos dois.
+      - name: Núcleo — testes
+        working-directory: voxvault-core
+        run: uv run --frozen pytest -m "not hardware and not gpu" -q -p no:cacheprovider
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voxvault-app/package-lock.json
+
+      - name: Interface — dependências
+        working-directory: voxvault-app
+        run: npm ci
+
+      - name: Interface — verificação de tipos
+        working-directory: voxvault-app
+        run: npm run check
+
+      # O aplicativo embute a interface compilada e os recursos do instalador
+      # na compilação: sem eles o `cargo test` nem compila.
+      - name: Interface — build
+        working-directory: voxvault-app
+        run: npm run build:fast
+
+      - name: Recursos do instalador
+        shell: pwsh
+        run: voxvault-app/tools/preparar-recursos.ps1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: voxvault-app/src-tauri
+
+      - name: Aplicativo — testes
+        working-directory: voxvault-app/src-tauri
+        run: cargo test --locked
+
+      - name: Aplicativo — clippy
+        working-directory: voxvault-app/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings

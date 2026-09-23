@@ -22,6 +22,12 @@ dependencies = [
 engine = [
     "faster-whisper>=1.1",
     "ctranslate2>=4.5",
+    # Declared rather than inherited from faster-whisper: media import and
+    # lossless compression read and write through PyAV, and the explicit model
+    # download goes through huggingface_hub. A transitive dependency can
+    # disappear in a minor release of the package that brought it.
+    "av>=14",
+    "huggingface-hub>=0.23",
 ]
 cuda = [
     "nvidia-cublas-cu12",
@@ -33,6 +39,7 @@ mcp = [
 dev = [
     "pytest>=8",
     "pytest-timeout>=2.3",
+    "ruff>=0.6",
 ]
 
 [project.scripts]

@@ -11,9 +11,13 @@ is already on: readers do not block the writer and the writer does not block
 readers. The contention policy lives in the store itself, so nothing here has
 to know about it.
 
-Handles are closed when :meth:`close_all` runs, not when a thread ends. That
-is deliberate: a pooled worker thread is reused for the life of the process,
-so a handle per thread is a bounded, small number.
+Handles are closed when :meth:`close_all` runs, and a thread that ends with
+its work closes its own with :meth:`release`. The difference matters: a pooled
+worker thread is reused for the life of the process, so its handle is one of a
+bounded, small number, but the service's HTTP server starts a thread per
+request -- and a resident app asks every few seconds, all day. Left open, each
+request's connection stayed behind: measured, about 2 MB a minute and a file
+handle per request.
 """
 
 from __future__ import annotations
@@ -68,6 +72,27 @@ class ThreadLocalStore:
         which is what keeps the constraint from leaking into every call site.
         """
         return getattr(self.handle, name)
+
+    def release(self) -> None:
+        """Close and forget the calling thread's handle, if it opened one.
+
+        Only the owning thread may close a connection, which is why a thread
+        that is about to end does this itself instead of anyone sweeping up
+        after it.
+        """
+        existing = getattr(self._local, "store", None)
+        if existing is None:
+            return
+        self._local.store = None
+        with self._lock:
+            try:
+                self._all.remove(existing)
+            except ValueError:
+                pass
+        try:
+            existing.close()
+        except Exception:
+            pass
 
     def close_all(self) -> None:
         with self._lock:

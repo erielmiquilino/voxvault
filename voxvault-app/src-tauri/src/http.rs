@@ -20,8 +20,21 @@ pub const SECRET_HEADER: &str = "X-VoxVault-Token";
 pub enum HttpError {
     Connect(String),
     Io(String),
+    /// The service accepted the request and did not answer within the
+    /// budget. Not the same as a failure: it may still be doing what it was
+    /// asked, and the caller has to say so rather than report it as refused.
+    Prazo(String),
     Protocol(String),
     Status { code: u16, body: String },
+}
+
+fn io(err: std::io::Error) -> HttpError {
+    match err.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+            HttpError::Prazo(err.to_string())
+        }
+        _ => HttpError::Io(err.to_string()),
+    }
 }
 
 impl HttpError {
@@ -31,6 +44,9 @@ impl HttpError {
                 format!("Não foi possível alcançar o serviço local: {detail}")
             }
             HttpError::Io(detail) => format!("Falha de comunicação com o serviço: {detail}"),
+            HttpError::Prazo(detail) => {
+                format!("O serviço local não respondeu dentro do prazo: {detail}")
+            }
             HttpError::Protocol(detail) => format!("Resposta inesperada do serviço: {detail}"),
             HttpError::Status { code, body } => {
                 if *code == 401 || *code == 403 {
@@ -66,7 +82,7 @@ pub fn request(
         .set_read_timeout(Some(timeout))
         .and_then(|_| stream.set_write_timeout(Some(timeout)))
         .and_then(|_| stream.set_nodelay(true))
-        .map_err(|err| HttpError::Io(err.to_string()))?;
+        .map_err(io)?;
 
     let payload = body.unwrap_or("");
     let mut head = format!(
@@ -86,7 +102,7 @@ pub fn request(
         .write_all(head.as_bytes())
         .and_then(|_| stream.write_all(payload.as_bytes()))
         .and_then(|_| stream.flush())
-        .map_err(|err| HttpError::Io(err.to_string()))?;
+        .map_err(io)?;
 
     read_response(stream)
 }
@@ -97,7 +113,7 @@ fn read_response(stream: TcpStream) -> Result<Response, HttpError> {
     let mut status_line = String::new();
     reader
         .read_line(&mut status_line)
-        .map_err(|err| HttpError::Io(err.to_string()))?;
+        .map_err(io)?;
     let status = status_line
         .split_whitespace()
         .nth(1)
@@ -110,7 +126,7 @@ fn read_response(stream: TcpStream) -> Result<Response, HttpError> {
         let mut line = String::new();
         let read = reader
             .read_line(&mut line)
-            .map_err(|err| HttpError::Io(err.to_string()))?;
+            .map_err(io)?;
         if read == 0 || line.trim().is_empty() {
             break;
         }
@@ -132,11 +148,11 @@ fn read_response(stream: TcpStream) -> Result<Response, HttpError> {
         raw.resize(length, 0);
         reader
             .read_exact(&mut raw)
-            .map_err(|err| HttpError::Io(err.to_string()))?;
+            .map_err(io)?;
     } else {
         reader
             .read_to_end(&mut raw)
-            .map_err(|err| HttpError::Io(err.to_string()))?;
+            .map_err(io)?;
     }
 
     let body = String::from_utf8_lossy(&raw).into_owned();
@@ -151,7 +167,7 @@ fn read_chunked(reader: &mut BufReader<TcpStream>, out: &mut Vec<u8>) -> Result<
         let mut size_line = String::new();
         reader
             .read_line(&mut size_line)
-            .map_err(|err| HttpError::Io(err.to_string()))?;
+            .map_err(io)?;
         let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or("0"), 16)
             .map_err(|_| HttpError::Protocol(format!("tamanho de bloco: {size_line:?}")))?;
         if size == 0 {
@@ -161,11 +177,11 @@ fn read_chunked(reader: &mut BufReader<TcpStream>, out: &mut Vec<u8>) -> Result<
         out.resize(start + size, 0);
         reader
             .read_exact(&mut out[start..])
-            .map_err(|err| HttpError::Io(err.to_string()))?;
+            .map_err(io)?;
         let mut terminator = [0u8; 2];
         reader
             .read_exact(&mut terminator)
-            .map_err(|err| HttpError::Io(err.to_string()))?;
+            .map_err(io)?;
     }
     Ok(())
 }

@@ -40,6 +40,24 @@ const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// loopback; anything past this is a hang, not slowness.
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// How long one request may take, by what it asks for.
+///
+/// Queries answer from memory and keep the short budget. Starting a recording
+/// opens two audio devices, which is normally a few hundred milliseconds but
+/// waits behind the warm-up a freshly started service is still doing. Ending
+/// one compresses and verifies the audio before answering -- seconds for an
+/// hour of meeting -- and giving up on it early would report a failure for a
+/// recording that was in fact ended and queued. The command line allows the
+/// same three minutes for it.
+pub fn prazo_para(path: &str) -> Duration {
+    match path.split('?').next().unwrap_or(path) {
+        "/gravacao/encerrar" => Duration::from_secs(180),
+        "/gravacao/iniciar" => Duration::from_secs(15),
+        "/gravacao/pausar" | "/gravacao/retomar" => Duration::from_secs(10),
+        _ => REQUEST_TIMEOUT,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceState {
@@ -373,6 +391,22 @@ impl ServiceClient {
     }
 
     fn tentar_iniciar(&self) -> Transition {
+        if crate::preparo::em_andamento() {
+            // The environment is being rebuilt: a service started from it now
+            // would lock the very files the preparation has to replace.
+            let mut inner = self.inner.lock().unwrap();
+            inner.detalhe = "O ambiente está sendo preparado; o serviço inicia ao final.".to_string();
+            return Transition::Unchanged;
+        }
+        if paths::core_executable().is_none() {
+            // Not prepared yet: there is nothing to start, and that is the
+            // preparation screen's news to give, not a failure of the service.
+            // Counted as one, it spent the retry budget and put an alarm over
+            // the very screen that was already saying what to do.
+            let mut inner = self.inner.lock().unwrap();
+            inner.detalhe = "O ambiente de execução ainda não foi preparado.".to_string();
+            return Transition::Unchanged;
+        }
         {
             let mut inner = self.inner.lock().unwrap();
             if inner.estado != ServiceState::Procurando {
@@ -461,6 +495,14 @@ fn probe(addr: SocketAddr, segredo: &str) -> Result<Health, http::HttpError> {
     })
 }
 
+/// A failed request, with whether it failed by running out of time -- in
+/// which case the service may still be doing what it was asked.
+#[derive(Debug, Clone)]
+pub struct ErroDaChamada {
+    pub mensagem: String,
+    pub prazo_esgotado: bool,
+}
+
 /// Issue a request to the attached service. Used by the recording commands.
 pub fn call(
     client: &ServiceClient,
@@ -468,6 +510,19 @@ pub fn call(
     path: &str,
     body: Option<&str>,
 ) -> Result<serde_json::Value, String> {
+    call_detalhado(client, method, path, body).map_err(|erro| erro.mensagem)
+}
+
+pub fn call_detalhado(
+    client: &ServiceClient,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<serde_json::Value, ErroDaChamada> {
+    let falha = |mensagem: String| ErroDaChamada {
+        mensagem,
+        prazo_esgotado: false,
+    };
     let (addr, segredo) = {
         let inner = client.inner.lock().unwrap();
         match (inner.endereco, inner.rendezvous.as_ref()) {
@@ -475,23 +530,26 @@ pub fn call(
                 (addr, rendezvous.segredo.clone())
             }
             _ => {
-                return Err(format!(
+                return Err(falha(format!(
                     "Esta ação exige o serviço residente do núcleo, que não está \
                      disponível.\n\n{}",
                     inner.detalhe
-                ))
+                )))
             }
         }
     };
-    let response = http::request(addr, method, path, &segredo, body, REQUEST_TIMEOUT)
-        .map_err(|err| err.mensagem())?;
+    let response = http::request(addr, method, path, &segredo, body, prazo_para(path))
+        .map_err(|err| ErroDaChamada {
+            prazo_esgotado: matches!(err, http::HttpError::Prazo(_)),
+            mensagem: err.mensagem(),
+        })?;
     // 204 and an empty body both mean "done, nothing to report" -- a recording
     // that stopped cleanly has no payload to hand back.
     if response.status == 204 || response.body.trim().is_empty() {
         return Ok(serde_json::Value::Null);
     }
     serde_json::from_str(&response.body)
-        .map_err(|err| format!("Resposta ilegível do serviço local: {err}"))
+        .map_err(|err| falha(format!("Resposta ilegível do serviço local: {err}")))
 }
 
 pub fn log_path() -> PathBuf {
@@ -530,6 +588,8 @@ fn spawn_service() -> Result<(), String> {
     let mut command = Command::new(&exe);
     command
         .arg("serve")
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME")
         .stdin(Stdio::null())
         .stdout(sink())
         .stderr(sink());
@@ -580,4 +640,17 @@ fn tail_of_log() -> String {
         return "Nenhuma saída foi registrada.".to_string();
     }
     tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    #[test]
+    fn encerrar_espera_a_compressao_e_consultas_nao() {
+        assert!(prazo_para("/gravacao/encerrar") >= Duration::from_secs(120));
+        assert!(prazo_para("/gravacao/iniciar") > REQUEST_TIMEOUT);
+        assert_eq!(prazo_para("/eventos?desde=3"), REQUEST_TIMEOUT);
+        assert_eq!(prazo_para("/saude"), REQUEST_TIMEOUT);
+    }
 }

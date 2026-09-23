@@ -103,34 +103,90 @@ def _check_data_dir(config: Config) -> DiagnosticItem:
 
 
 def _check_decoder() -> DiagnosticItem:
-    from .engine.media import find_ffmpeg
+    """Whether imported media can be read, proved by reading some.
 
-    exe = find_ffmpeg()
-    if not exe:
+    The decoder lives inside the environment -- PyAV carries its own libav*
+    libraries -- so the question is not whether a program is installed but
+    whether that library loads and decodes. A tenth of a second of synthetic
+    audio, written and read back, answers it without touching any real file.
+    """
+    import io
+
+    try:
+        import av
+        import numpy as np
+        import soundfile as sf
+
+        from .engine.media import decoder_version
+
+        buffer = io.BytesIO()
+        tone = (np.sin(np.arange(1600) * 0.1) * 8000).astype("int16")
+        sf.write(buffer, tone, 16_000, format="WAV", subtype="PCM_16")
+        buffer.seek(0)
+        with av.open(buffer) as container:
+            decoded = sum(frame.samples for frame in container.decode(audio=0))
+        if decoded != tone.size:
+            raise RuntimeError(f"{decoded} amostras decodificadas de {tone.size}")
+        detail = decoder_version()
+    except Exception as exc:
         return DiagnosticItem(
-            "ffmpeg", "Decodificador de midia", "falha",
-            "ffmpeg nao encontrado. Gravacao segue disponivel; "
-            "importacao e transcricao nao.",
-            remedy="winget install Gyan.FFmpeg  (e reabra o terminal)",
+            "midia", "Decodificador de midia", "falha",
+            f"A biblioteca de midia nao carregou ou nao decodificou ({exc}). "
+            f"Gravacao segue disponivel; importacao nao.",
+            remedy="Refaca o preparo do ambiente nas configuracoes do aplicativo.",
         )
-    detail = exe
-    if not shutil.which("ffmpeg"):
-        detail += "  (encontrado fora do PATH; reabra o terminal para que o "
-        detail += "PATH passe a inclui-lo)"
-    return DiagnosticItem("ffmpeg", "Decodificador de midia", "ok", detail)
+    return DiagnosticItem("midia", "Decodificador de midia", "ok", detail)
 
 
-def _check_inference(config: Config) -> DiagnosticItem:
-    from .engine.capability import probe_inference
+def _check_inference(config: Config, model: str) -> DiagnosticItem:
+    from .engine.capability import model_is_default, probe_inference
 
-    capability = probe_inference(config)
+    default = model_is_default(config)
+    capability = probe_inference(config, model=model, hardware_default=default)
     detail = capability.detail
+    if default:
+        detail = f"Modelo padrao para este hardware: {model}. {detail}"
     if capability.warning:
         detail = f"{detail} {capability.warning}".strip()
     return DiagnosticItem(
         "inferencia", "Ambiente de inferencia", capability.status,
         detail, remedy=capability.remedy,
     )
+
+
+def _check_model(config: Config, model: str) -> DiagnosticItem:
+    """Whether the model a transcription would use is already on disk.
+
+    Only the disk is asked, the way the engine asks it: a transcription never
+    downloads, so a model that is not here is a transcription that cannot
+    happen until somebody downloads it. Recording does not depend on it.
+    """
+    from pathlib import Path
+
+    from .engine.models import installed, repository
+
+    try:
+        repository(model)
+    except ValueError:
+        # Not one of the known names: the engine takes it as a local folder.
+        if Path(model).is_dir():
+            return DiagnosticItem("modelo", "Modelo de transcricao", "ok",
+                                  f"Pasta local: {model}")
+        return DiagnosticItem(
+            "modelo", "Modelo de transcricao", "falha",
+            f"'{model}' nao e um modelo conhecido nem uma pasta existente.",
+            remedy="Escolha um modelo nas Configuracoes do aplicativo.",
+        )
+    path = installed(config.models_dir, model)
+    if path is None:
+        return DiagnosticItem(
+            "modelo", "Modelo de transcricao", "falha",
+            f"O modelo {model} nao esta em {config.models_dir}. Gravacao segue "
+            f"disponivel; transcricao nao.",
+            remedy=f"Baixe-o nas Configuracoes do aplicativo ou com: "
+                   f"voxvault models download --model {model}",
+        )
+    return DiagnosticItem("modelo", "Modelo de transcricao", "ok", f"{model} em {path}")
 
 
 def _check_libraries() -> DiagnosticItem:
@@ -314,7 +370,12 @@ def run_diagnostics(config: Config | None = None) -> Report:
     report.add(_check_libraries())
     report.add(_check_data_dir(cfg))
     report.add(_check_decoder())
-    report.add(_check_inference(cfg))
+    from .engine.capability import effective_model
+
+    # Asked once: it may query the GPU, and two items depend on the answer.
+    model = effective_model(cfg)
+    report.add(_check_inference(cfg, model))
+    report.add(_check_model(cfg, model))
     report.add(_check_capture())
     report.add(_check_mcp_registration())
     return report

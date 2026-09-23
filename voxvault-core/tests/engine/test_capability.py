@@ -100,3 +100,67 @@ def test_suggestion_only_offers_a_model_that_actually_fits() -> None:
 def test_unknown_model_is_sized_as_large_not_as_free() -> None:
     """Guessing small for an unknown name would fail at load time instead."""
     assert cap.required_vram_mb("modelo-inventado") == cap.required_vram_mb("large-v3")
+
+
+# -- the default model follows the hardware --------------------------------
+
+def _placement(monkeypatch, gpu, *, config: Config):
+    """Where the real engine decides to run, with the GPU probe simulated."""
+    from voxvault.engine.local_whisper import LocalWhisperEngine
+
+    monkeypatch.setattr(cap, "query_nvidia_gpu", lambda: gpu)
+    monkeypatch.setattr(cap, "cuda_libraries_load", lambda: (True, ""))
+    import voxvault.engine.local_whisper as lw
+
+    monkeypatch.setattr(lw, "query_nvidia_gpu", lambda: gpu)
+    info = LocalWhisperEngine(config).info()
+    return info.model, info.device, info.compute_type
+
+
+@pytest.fixture
+def default_config() -> Config:
+    """No model configured anywhere: every field at its built-in default."""
+    return Config(data_dir=Path(r"D:\VoxVault"))
+
+
+@pytest.mark.parametrize(
+    ("gpu", "expected"),
+    [
+        (("RTX 4060 Ti", 8188, 7000), ("large-v3", "cuda", "float16")),
+        (("GTX 1650", 4096, 3800), ("large-v3-turbo", "cuda", "float16")),
+        (("GT 1030", 2048, 1900), ("large-v3-turbo", "cpu", "int8")),
+        (None, ("large-v3-turbo", "cpu", "int8")),
+    ],
+    ids=["gpu-8gb", "gpu-4gb", "gpu-2gb", "sem-gpu"],
+)
+def test_the_default_model_follows_the_spec_table(
+    monkeypatch, default_config: Config, gpu, expected
+) -> None:
+    assert _placement(monkeypatch, gpu, config=default_config) == expected
+
+
+def test_a_chosen_model_prevails_over_the_hardware_default(monkeypatch) -> None:
+    """Scenario: Modelo configurado explicitamente em CPU."""
+    chosen = Config(
+        data_dir=Path(r"D:\VoxVault"), model="large-v3",
+        sources={"model": "arquivo de configuracao C:/x/config.json"},
+    )
+    model, device, compute = _placement(monkeypatch, None, config=chosen)
+    assert (model, device, compute) == ("large-v3", "cpu", "int8")
+    warning = cap.probe_inference(chosen).warning
+    assert "1,4x o tempo real" in warning and "45 min" in warning
+
+
+def test_the_thresholds_are_the_matrix_own(default_config: Config) -> None:
+    """The default never picks a model the matrix would refuse."""
+    limite_large = cap.required_vram_mb("large-v3")
+    limite_turbo = cap.required_vram_mb("large-v3-turbo")
+    assert (limite_large, limite_turbo) == (5600, 2500)
+    assert cap.default_model_for(limite_large) == ("large-v3", "cuda")
+    assert cap.default_model_for(limite_large - 1) == ("large-v3-turbo", "cuda")
+    assert cap.default_model_for(limite_turbo - 1) == ("large-v3-turbo", "cpu")
+
+
+def test_the_diagnostic_switch_hides_the_gpu(monkeypatch) -> None:
+    monkeypatch.setenv(cap.FORCE_CPU_ENV, "1")
+    assert cap.query_nvidia_gpu() is None

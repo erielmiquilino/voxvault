@@ -12,6 +12,11 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> int:
+    import os
+
+    # Never online from here: models come from disk, and nothing is reported.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     argv = sys.argv[1:] if argv is None else argv
 
     if "--check" in argv:

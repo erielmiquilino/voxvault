@@ -16,11 +16,16 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::avisos;
 use crate::cli::{self, CoreError};
+use crate::janela;
 use crate::library;
 use crate::paths::{self, DataDirSource};
+use crate::prefs;
+use crate::preparo;
+use crate::residente::Residente;
 use crate::service::{self, ServiceClient};
 use crate::system;
 
@@ -68,6 +73,7 @@ type Resposta<T> = Result<T, Falha>;
 #[derive(Debug, Clone, Serialize)]
 pub struct Ambiente {
     pub preparado: bool,
+    pub situacao: preparo::Situacao,
     pub raiz_do_nucleo: Option<String>,
     pub executavel: Option<String>,
     pub detalhe: String,
@@ -76,125 +82,84 @@ pub struct Ambiente {
 
 #[tauri::command]
 pub fn ambiente_estado() -> Ambiente {
-    let raiz = paths::core_root();
-    let executavel = paths::core_executable();
-    match (&raiz, &executavel) {
-        (Some(_), Some(_)) => Ambiente {
-            preparado: true,
-            raiz_do_nucleo: raiz.map(display),
-            executavel: executavel.map(display),
-            detalhe: "Ambiente de execução do núcleo pronto.".to_string(),
-            acao: None,
-        },
-        (Some(raiz_encontrada), None) => Ambiente {
-            preparado: false,
-            raiz_do_nucleo: Some(display(raiz_encontrada.clone())),
-            executavel: None,
-            detalhe: format!(
-                "O núcleo foi encontrado em {}, mas seu ambiente de execução \
-                 ainda não existe. Ele precisa ser preparado uma única vez: o \
-                 interpretador e as bibliotecas de GPU não vêm dentro do \
-                 aplicativo, justamente para que ele continue pequeno.",
-                raiz_encontrada.display()
-            ),
-            acao: Some("Preparar o ambiente agora.".to_string()),
-        },
-        _ => Ambiente {
-            preparado: false,
-            raiz_do_nucleo: None,
-            executavel: None,
-            detalhe: "O diretório do núcleo (voxvault-core) não foi encontrado a \
-                      partir da localização do aplicativo."
-                .to_string(),
-            acao: Some(
-                "Defina a variável de ambiente VOXVAULT_CORE_ROOT apontando para \
-                 o diretório do núcleo e reabra o aplicativo."
-                    .to_string(),
-            ),
-        },
+    let raiz = paths::core_root().map(display);
+    let executavel = paths::core_executable().map(display);
+    let situacao = preparo::situacao_atual();
+    let (preparado, detalhe, acao) = match &situacao {
+        preparo::Situacao::Pronto | preparo::Situacao::Desenvolvimento => (
+            executavel.is_some(),
+            "Ambiente de execução do núcleo pronto.".to_string(),
+            None,
+        ),
+        preparo::Situacao::Primeiro { retomada } => (
+            false,
+            if *retomada {
+                "O preparo anterior não terminou. Retomá-lo aproveita tudo o que já foi baixado."
+                    .to_string()
+            } else {
+                "Antes do primeiro uso, o VoxVault prepara o seu ambiente de execução.".to_string()
+            },
+            Some(if *retomada { "Retomar o preparo." } else { "Preparar o ambiente." }.to_string()),
+        ),
+        preparo::Situacao::Desatualizado { motivo } => (
+            false,
+            format!("{motivo} O ambiente vai ser atualizado, sem baixar o que já está em dia."),
+            None,
+        ),
+        preparo::Situacao::SemRecursos => (
+            false,
+            "A instalação está incompleta: faltam os recursos do núcleo.".to_string(),
+            Some("Reinstale o VoxVault a partir do instalador da release.".to_string()),
+        ),
+    };
+    Ambiente {
+        preparado,
+        situacao,
+        raiz_do_nucleo: raiz,
+        executavel,
+        detalhe,
+        acao,
     }
 }
 
-/// Prepare the core's managed environment, reporting progress as it goes.
-///
-/// `uv` is invoked rather than reimplemented: it is already on this machine, it
-/// downloads its own interpreter, and it is what the core's own instructions
-/// use. Its output is forwarded line by line so the wait is visible instead of
-/// being a window that looks hung.
+impl From<preparo::FalhaDoPreparo> for Falha {
+    fn from(falha: preparo::FalhaDoPreparo) -> Self {
+        Falha::com_acao(falha.mensagem, falha.acao)
+    }
+}
+
+/// Hardware, data directory, what would be downloaded and whether it fits --
+/// everything the preparation screen shows before anything is fetched.
 #[tauri::command]
-pub async fn ambiente_preparar(app: AppHandle) -> Resposta<String> {
-    let raiz = paths::core_root().ok_or_else(|| {
-        Falha::com_acao(
-            "O diretório do núcleo não foi encontrado, então não há o que preparar.",
-            "Defina VOXVAULT_CORE_ROOT e reabra o aplicativo.",
-        )
-    })?;
+pub async fn preparo_plano(pasta: Option<String>) -> Resposta<preparo::Plano> {
+    tauri::async_runtime::spawn_blocking(move || preparo::planejar(pasta))
+        .await
+        .map_err(|err| Falha::nova(format!("O plano do preparo foi interrompido: {err}")))?
+        .map_err(Falha::from)
+}
 
+/// Run the preparation. Progress goes out as `preparo://etapa` and
+/// `preparo://linha`; the answer comes when the verification has passed.
+#[tauri::command]
+pub async fn preparo_iniciar(app: AppHandle, pasta: Option<String>) -> Resposta<String> {
+    let resultado = tauri::async_runtime::spawn_blocking(move || preparo::preparar(&app, pasta))
+        .await
+        .map_err(|err| Falha::nova(format!("O preparo foi interrompido: {err}")))?;
+    resultado.map_err(Falha::from)?;
+    Ok("Ambiente de execução preparado.".to_string())
+}
+
+/// Download a model before a settings change adopts it, with the same
+/// progress as the preparation's own step (`preparo://etapa`, `modelo`).
+#[tauri::command]
+pub async fn modelo_baixar(app: AppHandle, modelo: String) -> Resposta<String> {
     let resultado = tauri::async_runtime::spawn_blocking(move || {
-        use std::io::{BufRead, BufReader};
-        use std::process::{Command, Stdio};
-
-        let mut command = Command::new("uv");
-        command
-            .arg("sync")
-            .current_dir(&raiz)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000);
-        }
-
-        let mut child = command.spawn().map_err(|err| {
-            format!(
-                "Não foi possível executar `uv sync` em {}: {err}. \
-                 O `uv` precisa estar instalado e no PATH.",
-                raiz.display()
-            )
-        })?;
-
-        if let Some(stderr) = child.stderr.take() {
-            // `uv` reports progress on stderr; each line becomes one visible
-            // step rather than a spinner that says nothing.
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let _ = app.emit("ambiente://progresso", line);
-            }
-        }
-        if let Some(stdout) = child.stdout.take() {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                let _ = app.emit("ambiente://progresso", line);
-            }
-        }
-
-        let status = child
-            .wait()
-            .map_err(|err| format!("O preparo terminou de forma indeterminada: {err}"))?;
-        if !status.success() {
-            return Err(format!(
-                "`uv sync` terminou com código {}. O ambiente não ficou utilizável.",
-                status.code().unwrap_or(-1)
-            ));
-        }
-        Ok(())
+        preparo::baixar_modelo(&app, "modelo", &paths::runtime_dir(), &modelo)
     })
     .await
-    .map_err(|err| Falha::nova(format!("O preparo foi interrompido: {err}")))?;
-
-    resultado.map_err(|mensagem: String| {
-        Falha::com_acao(
-            mensagem,
-            "Rode `uv sync` no diretório do núcleo num terminal para ver a causa \
-             completa, corrija-a e tente de novo.",
-        )
-    })?;
-
-    // Preparation is only done when the core answers, not when the installer
-    // exits zero. The gate has to be a working command, or the main interface
-    // would open with commands that merely look functional.
-    cli::probe(std::time::Duration::from_secs(30))?;
-    Ok("Ambiente de execução preparado.".to_string())
+    .map_err(|err| Falha::nova(format!("O download foi interrompido: {err}")))?;
+    resultado.map_err(Falha::from)?;
+    Ok("Modelo baixado.".to_string())
 }
 
 // -- resident service ------------------------------------------------------
@@ -224,28 +189,46 @@ pub fn gravacao_estado(cliente: State<'_, ServiceClient>) -> Resposta<serde_json
     service::call(&cliente, "GET", "/gravacao", None).map_err(Falha::nova)
 }
 
-#[tauri::command]
-pub fn gravacao_iniciar(
-    cliente: State<'_, ServiceClient>,
-    titulo: String,
+/// Recording requests, off the main thread: ending a recording waits for the
+/// audio to be compressed and verified, and the window must stay responsive
+/// meanwhile. A pass right after each one moves the tray icon at once.
+async fn pedir_a_gravacao(
+    app: AppHandle,
+    caminho: &'static str,
+    corpo: Option<String>,
 ) -> Resposta<serde_json::Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let resposta = {
+            let cliente = app.state::<ServiceClient>();
+            service::call(&cliente, "POST", caminho, corpo.as_deref())
+        };
+        crate::residente::ciclo(&app);
+        resposta
+    })
+    .await
+    .map_err(|err| Falha::nova(format!("O pedido ao serviço foi interrompido: {err}")))?
+    .map_err(Falha::nova)
+}
+
+#[tauri::command]
+pub async fn gravacao_iniciar(app: AppHandle, titulo: String) -> Resposta<serde_json::Value> {
     let corpo = serde_json::json!({ "titulo": titulo }).to_string();
-    service::call(&cliente, "POST", "/gravacao/iniciar", Some(&corpo)).map_err(Falha::nova)
+    pedir_a_gravacao(app, "/gravacao/iniciar", Some(corpo)).await
 }
 
 #[tauri::command]
-pub fn gravacao_pausar(cliente: State<'_, ServiceClient>) -> Resposta<serde_json::Value> {
-    service::call(&cliente, "POST", "/gravacao/pausar", None).map_err(Falha::nova)
+pub async fn gravacao_pausar(app: AppHandle) -> Resposta<serde_json::Value> {
+    pedir_a_gravacao(app, "/gravacao/pausar", None).await
 }
 
 #[tauri::command]
-pub fn gravacao_retomar(cliente: State<'_, ServiceClient>) -> Resposta<serde_json::Value> {
-    service::call(&cliente, "POST", "/gravacao/retomar", None).map_err(Falha::nova)
+pub async fn gravacao_retomar(app: AppHandle) -> Resposta<serde_json::Value> {
+    pedir_a_gravacao(app, "/gravacao/retomar", None).await
 }
 
 #[tauri::command]
-pub fn gravacao_encerrar(cliente: State<'_, ServiceClient>) -> Resposta<serde_json::Value> {
-    service::call(&cliente, "POST", "/gravacao/encerrar", None).map_err(Falha::nova)
+pub async fn gravacao_encerrar(app: AppHandle) -> Resposta<serde_json::Value> {
+    pedir_a_gravacao(app, "/gravacao/encerrar", None).await
 }
 
 // -- library ---------------------------------------------------------------
@@ -667,24 +650,119 @@ pub fn mcp_registrar() -> Resposta<String> {
     cli::mcp_apply().map_err(Falha::from)
 }
 
-// -- closing ---------------------------------------------------------------
+// -- the resident app --------------------------------------------------------
+//
+// The window can be destroyed and built again at any moment, so what must
+// survive it lives in the process: the route to reopen on, and the
+// preferences. The interface reports its route on every navigation and asks
+// for it before drawing.
 
-#[derive(Debug, Clone, Serialize)]
-pub struct EstadoDeFechamento {
-    pub gravando: bool,
-    pub fila_pendente: u32,
-    pub duracao_ms: i64,
+#[tauri::command]
+pub fn app_registrar_rota(app: AppHandle, rota: String) {
+    *app.state::<Residente>().rota.lock().unwrap() = rota;
 }
 
 #[tauri::command]
-pub fn estado_de_fechamento(cliente: State<'_, ServiceClient>) -> EstadoDeFechamento {
-    let snapshot = cliente.snapshot();
-    let saude = snapshot.saude.unwrap_or_default();
-    EstadoDeFechamento {
-        gravando: saude.gravacao_ativa,
-        fila_pendente: saude.fila_pendente,
-        duracao_ms: 0,
+pub fn app_rota_inicial(app: AppHandle) -> String {
+    app.state::<Residente>().rota.lock().unwrap().clone()
+}
+
+/// The restored route is on screen: how long reopening took.
+#[tauri::command]
+pub fn app_janela_pronta(app: AppHandle, ms_na_interface: f64) -> janela::MedidaDeAbertura {
+    janela::registrar_pronta(&app, ms_na_interface)
+}
+
+#[tauri::command]
+pub fn app_ultima_abertura(app: AppHandle) -> Option<janela::MedidaDeAbertura> {
+    *app.state::<Residente>().ultima_abertura.lock().unwrap()
+}
+
+/// Everything the "Aplicativo" section of the settings shows.
+#[derive(Debug, Clone, Serialize)]
+pub struct Aplicativo {
+    pub preferencias: prefs::Preferencias,
+    /// Why the preferences file was set aside, when it was.
+    pub preferencias_ilegiveis: Option<String>,
+    /// Read from the registry, which is the only truth about it.
+    pub inicio_com_o_windows: Option<bool>,
+    pub inicio_com_o_windows_erro: Option<String>,
+    pub atalho: crate::atalho::EstadoDoAtalho,
+}
+
+fn aplicativo(app: &AppHandle) -> Aplicativo {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let estado = app.state::<Residente>();
+    let (inicio, erro) = match app.autolaunch().is_enabled() {
+        Ok(ligado) => (Some(ligado), None),
+        Err(erro) => (None, Some(erro.to_string())),
+    };
+    let preferencias = estado.preferencias.lock().unwrap().clone();
+    let ilegiveis = estado.preferencias_ilegiveis.lock().unwrap().clone();
+    let atalho = estado.atalho.lock().unwrap().clone();
+    Aplicativo {
+        preferencias,
+        preferencias_ilegiveis: ilegiveis,
+        inicio_com_o_windows: inicio,
+        inicio_com_o_windows_erro: erro,
+        atalho,
     }
+}
+
+#[tauri::command]
+pub fn aplicativo_ler(app: AppHandle) -> Aplicativo {
+    aplicativo(&app)
+}
+
+#[tauri::command]
+pub fn notificacoes_definir(app: AppHandle, chaves: prefs::Notificacoes) -> Resposta<Aplicativo> {
+    let estado = app.state::<Residente>();
+    {
+        let mut preferencias = estado.preferencias.lock().unwrap();
+        preferencias.notificacoes = chaves;
+        prefs::gravar(&prefs::caminho(), &preferencias).map_err(|erro| {
+            Falha::nova(format!("As preferências não puderam ser gravadas: {erro}"))
+        })?;
+    }
+    *estado.preferencias_ilegiveis.lock().unwrap() = None;
+    Ok(aplicativo(&app))
+}
+
+/// Register the new shortcut before releasing the old one; on a conflict the
+/// old one stays in force and the cause comes back.
+#[tauri::command]
+pub fn atalho_trocar(app: AppHandle, atalho: String) -> Resposta<Aplicativo> {
+    crate::atalho::trocar(&app, atalho.trim()).map_err(Falha::nova)?;
+    Ok(aplicativo(&app))
+}
+
+#[tauri::command]
+pub fn inicio_com_o_windows_definir(app: AppHandle, ligado: bool) -> Resposta<Aplicativo> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let resultado = if ligado {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    };
+    resultado.map_err(|erro| {
+        Falha::nova(format!(
+            "Não foi possível {} o início com o Windows: {erro}",
+            if ligado { "ligar" } else { "desligar" }
+        ))
+    })?;
+    Ok(aplicativo(&app))
+}
+
+/// Show one sample of a category, to check that notifications reach this
+/// machine's screen. Honours the category switch like any other.
+#[tauri::command]
+pub fn notificacao_de_teste(app: AppHandle, categoria: String) -> Resposta<()> {
+    let categoria = avisos::Categoria::de_nome(&categoria)
+        .ok_or_else(|| Falha::nova(format!("Categoria de notificação desconhecida: {categoria}")))?;
+    avisos::mostrar(&app, avisos::Aviso::exemplo(categoria));
+    Ok(())
 }
 
 fn display(path: PathBuf) -> String {

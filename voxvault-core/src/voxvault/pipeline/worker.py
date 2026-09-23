@@ -31,6 +31,11 @@ def _emit(payload: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    import os
+
+    # Never online from here: models come from disk, and nothing is reported.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     # Accented Portuguese travels this pipe. Without forcing UTF-8 the parent's
     # reader dies on the first cedilla and the job looks like a silent failure.
     for stream in (sys.stdout, sys.stderr):

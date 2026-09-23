@@ -32,6 +32,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Threading",
 ] }
+tauri-winrt-notification = "0.8"
+tauri-plugin-autostart = "2"
 
 [profile.release]
 codegen-units = 1

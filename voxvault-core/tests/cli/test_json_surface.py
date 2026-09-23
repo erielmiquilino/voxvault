@@ -174,7 +174,7 @@ def test_doctor_json_reports_every_item_with_its_state(data_dir):
     payload = json.loads(out)
 
     chaves = {item["chave"] for item in payload["itens"]}
-    assert {"python", "bibliotecas", "data_dir", "ffmpeg"} <= chaves
+    assert {"python", "bibliotecas", "data_dir", "midia"} <= chaves
     assert all(item["estado"] in {"ok", "aviso", "falha"} for item in payload["itens"])
     assert isinstance(payload["falhou"], bool)
 
@@ -190,6 +190,8 @@ def test_config_json_carries_value_and_origin(data_dir):
     assert payload["arquivo"]
     assert payload["valores"]["model"]["valor"]
     assert payload["valores"]["model"]["origem"]
+    # The model a transcription would use: the hardware's, while nobody chose.
+    assert payload["modelo_efetivo"] in {"large-v3", "large-v3-turbo"}
 
 
 # -- rename and remove-audio -------------------------------------------

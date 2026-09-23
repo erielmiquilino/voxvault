@@ -1,0 +1,9 @@
+{
+  "comentario": "Componentes de terceiros embutidos no instalador. A versao do uv e a mesma que gera o voxvault-core/uv.lock e a que o CI instala: trocar aqui e regenerar o lock no mesmo commit.",
+  "uv": {
+    "versao": "0.12.18",
+    "arquivo": "uv-x86_64-pc-windows-msvc.zip",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.12.18/uv-x86_64-pc-windows-msvc.zip",
+    "sha256": "cae6a3bc25239f83dffb467a4b180508d9da23986c04639ebfa44e43e6a84bff"
+  }
+}
