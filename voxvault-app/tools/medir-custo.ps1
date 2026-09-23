@@ -123,12 +123,15 @@ function Get-Arvore {
 
     # The resident service is not a child of the app -- it is deliberately
     # detached, so that closing the window cannot take a queue down with it.
-    # It is therefore located by path, not by descent.
+    # It is therefore located by path, not by descent: the checkout's
+    # environment in development, the prepared one once installed. Matching
+    # only the checkout measured an installed app without its service.
     $servico = @($todos | Where-Object {
         $nome = [IO.Path]::GetFileNameWithoutExtension($_.Name)
         ($NOME_SERVICO -contains $nome) -and
         $_.ExecutablePath -and
-        ($_.ExecutablePath -like "*voxvault-core*")
+        (($_.ExecutablePath -like "*voxvault-core*") -or
+         ($_.ExecutablePath -like "*\.voxvault\runtime\*"))
     })
     $raizes += $servico
 
@@ -184,6 +187,11 @@ Write-Host "  janela                : $Janela, $(if ($Gravando) { 'gravando' } e
 if (-not $estadoOk) {
     Write-Host "  AVISO: nao foi possivel confirmar o estado da janela; o numero abaixo"
     Write-Host "         nao pode ser atribuido com seguranca ao estado '$Janela'."
+}
+[void](Get-Arvore)
+if (-not ($script:grupos.Values -contains "servico")) {
+    Write-Host "  AVISO: nenhum processo do servico residente foi encontrado; a soma"
+    Write-Host "         abaixo e so a do aplicativo."
 }
 Write-Host ""
 
