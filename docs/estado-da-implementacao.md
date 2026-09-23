@@ -334,7 +334,7 @@ Depois que o áudio voltou, no aplicativo instalado e recolhido na bandeja:
   webcam, o áudio do sistema para o monitor —, com um aviso da perda e um da
   troca em cada trilha, e a gravação seguiu sem divergência entre elas.
 
-### O que a hora gravando mostrou
+### Dois defeitos da verificação instalada
 
 **Um pacote silencioso ocupava o triplo do seu tempo.** A trilha do sistema da
 gravação de uma hora terminou 16,66 s mais longa que a reunião, com os
@@ -354,6 +354,17 @@ Entre as gravações guardadas, a reunião real de 39 minutos não foi afetada
 (+0,06 s); duas de teste, sim. O caso não se deixou provocar sob demanda num
 dispositivo real; com bipes tocados em instantes conhecidos, a trilha do
 sistema os pôs a no máximo 0,12 s do esperado.
+
+**Clicar numa notificação não abria nada.** O clique dependia de um aviso
+dentro do processo, que um aplicativo sem pacote só recebe enquanto o Windows
+ainda segura a notificação mostrada; clicada na central — para onde todas vão
+com o "Não incomodar" ligado —, ela não chegava a lugar algum. Só a decisão do
+que abrir tinha teste, e foi o usuário quem clicou. Cada notificação leva agora
+um endereço `voxvault://`, registrado para o usuário pelo próprio aplicativo:
+o Windows o abre de onde a notificação for clicada, a instância única o
+entrega ao processo que já roda, e a janela abre na rota que ele nomeia. O
+"Gravar" de uma reunião detectada leva um token de uso único, para que
+nenhum outro programa possa gravar abrindo um endereço.
 
 ### Em aberto
 

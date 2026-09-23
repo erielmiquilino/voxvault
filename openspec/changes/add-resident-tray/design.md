@@ -81,7 +81,9 @@ São gerados por `voxvault-app/tools/gerar-icones-bandeja.py` a partir de `icons
 
 ### 5. Notificações com botão pelo WinRT, e eventos com cursor no serviço
 
-- **Biblioteca.** Usa `tauri-winrt-notification` diretamente: `Toast::new(aumid)`, `add_button("Gravar", "gravar")`, `on_activated`. O plugin oficial de notificações não expõe botões de ação no desktop, e o botão "Gravar" é exigido pela detecção de reunião.
+- **Montagem.** O XML da notificação é montado pelo aplicativo e mostrado pelo WinRT (`windows::UI::Notifications`), com os títulos escapados. O plugin oficial de notificações não expõe botões de ação no desktop, e o botão "Gravar" é exigido pela detecção de reunião.
+- **Clique por endereço.** Cada notificação com destino leva `activationType="protocol"` e um endereço `voxvault://abrir/<rota>`; o botão "Gravar" leva `voxvault://gravar/<token>`. O esquema `voxvault:` é registrado em `HKCU\Software\Classes` pelo próprio aplicativo a cada partida, apontando para o executável em uso, e removido pela desinstalação. O Windows abre o endereço de onde a notificação for clicada, iniciando o executável com ele; a instância única o entrega ao processo que já roda, que abre a janela na rota; clicada com o aplicativo encerrado, ela o inicia já nessa rota. Só as rotas de gravação e de uma reunião são aceitas; o resto abre a janela, como uma segunda abertura qualquer.
+- **Token do "Gravar".** Qualquer programa pode abrir um endereço, então nenhum grava sozinho: o token é emitido pelo processo ao mostrar a sugestão, vale enquanto ela vale e é usado uma vez; um token desconhecido ou vencido só abre a janela.
 - **AUMID.** O identificador do pacote, `com.erielmiquilino.voxvault`, que o atalho do menu Iniciar criado pelo instalador registra. Rodando fora de uma instalação, sem esse atalho, usa-se o AUMID do PowerShell, para as notificações aparecerem no desenvolvimento. A verificação no aplicativo instalado é uma tarefa de `add-public-release`.
 - **Eventos.** O serviço ganha `GET /eventos?desde=<seq>`, que devolve `{"eventos": [{"seq", "tipo", "uid", "titulo", "detalhe", "instante"}], "ultimo": <seq>, "execucao": <instante de partida do serviço>}`, com o título da reunião em `titulo` para a notificação nomeá-la sem consultar a lista. O `seq` é monotônico por execução do serviço; `execucao` muda quando o serviço reinicia e a numeração recomeça, e o aplicativo, ao ver outra `execucao`, lê a nova execução desde o início — tudo nela aconteceu com ele já aberto. `_record_event` e o callback `on_event` do pipeline passam a receber o `uid` separado do texto.
 - **Primeira consulta.** Na primeira consulta de cada sessão do aplicativo, ele só registra `ultimo` e não notifica nada. É isso que impede notificar eventos anteriores à abertura.
@@ -90,9 +92,11 @@ São gerados por `voxvault-app/tools/gerar-icones-bandeja.py` a partir de `icons
   - *Transcrição concluída / falha:* `/eventos` com tipo `pronta` / `falhou`.
   - *Avisos de captura:* novas entradas em `/gravacao.avisos` que tratam de dispositivo — perdido, recuperando, gravando agora em, encerrada como incompleta.
   - *Microfone mudo:* `niveis.mic.silencio_ha_s ≥ 60`, emitido uma vez por episódio. O episódio termina quando o valor volta abaixo de 60.
-  - *Reunião detectada:* `/deteccao` passando a indicar reunião, com o botão "Gravar". A notificação registra o instante; um `on_activated` com a ação `gravar` depois de 2 minutos abre a janela em vez de gravar. Esse é o tempo limite da sugestão.
+  - *Reunião detectada:* `/deteccao` passando a indicar reunião, com o botão "Gravar". O token do botão registra o instante; acioná-lo depois de 2 minutos abre a janela em vez de gravar. Esse é o tempo limite da sugestão.
 - **Deduplicação.** Um conjunto em memória de chaves (`tipo:uid:seq`) já notificadas.
 - **Ao clicar numa notificação:** transcrição → rota da reunião; gravação e avisos → tela de Gravação; aviso da bandeja → nada.
+
+*Alternativa descartada:* o `on_activated` de `tauri-winrt-notification`, a primeira implementação. Um aplicativo sem pacote só recebe esse aviso dentro do processo enquanto o Windows ainda segura a notificação mostrada; clicada na central — para onde todas vão com o "Não incomodar" ligado —, ela não chegava a lugar algum, e isso só apareceu com o aplicativo instalado. A outra saída, um ativador COM registrado no atalho, pede um servidor COM no aplicativo para o mesmo resultado.
 
 ### 6. Preferências do aplicativo em arquivo próprio
 
