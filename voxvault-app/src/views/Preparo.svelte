@@ -203,7 +203,8 @@
           </table>
           <p class="legenda" style="margin:6px 0 0">
             {#each plano.volumes as volume, i (volume.raiz)}
-              {i ? " · " : ""}Volume {volume.raiz}: {espaco(volume)}
+              <!-- A drive root already ends in its colon ("C:"). -->
+              {i ? " · " : ""}Volume {volume.raiz} {espaco(volume)}
             {/each}
           </p>
           {#if plano.recusa}
