@@ -245,6 +245,55 @@ def test_a_two_minute_idle_stretch_is_filled_and_recorded():
     assert placer.written_frames == before + 120 * RATE + 480
 
 
+def test_a_pause_the_device_clock_did_not_count_is_still_filled():
+    """The case a position alone cannot see.
+
+    Measured on a Bluetooth headset in stereo mode: twelve seconds with nothing
+    playing, and the device position advanced 20 ms. The next packet's position
+    says "right after the last one"; its instant says twelve seconds later.
+    """
+    from voxvault.capture.anchor import CLOCK_STOOD_STILL
+
+    placer = _placer(session_qpc_ns=0)
+    for p in coherent_stream(count=10, start_position=0, start_qpc_ns=0):
+        placer.place(p)
+    before = placer.written_frames
+
+    resumed = packet(
+        device_position=before,        # the clock did not move
+        frames=480,
+        qpc_ns=before * NS // RATE + 12 * NS,
+    )
+    placement = placer.place(resumed)
+
+    assert placement.gap is True
+    assert placement.silence_frames == pytest.approx(12 * RATE, abs=2)
+    assert placer.gaps[0][2] == CLOCK_STOOD_STILL
+    # And what follows keeps its place: aligned to its own instant again.
+    after = packet(
+        device_position=before + 480,
+        frames=480,
+        qpc_ns=(before + 480) * NS // RATE + 12 * NS,
+    )
+    assert placer.place(after).silence_frames == 0
+    assert placer.written_frames == pytest.approx(before + 12 * RATE + 960, abs=2)
+    assert residual_ns(placer.anchor, after) == 0
+
+
+def test_a_start_that_runs_slow_below_the_threshold_moves_nothing():
+    """Also measured on that headset: its first 15 packets arrive 20 ms apart
+    while each carries 10 ms, the link waking up. 150 ms in all -- jitter by
+    the threshold's standard, and filling it would fabricate silence."""
+    placer = _placer(session_qpc_ns=0)
+    for index in range(15):
+        placement = placer.place(
+            packet(device_position=index * 480, frames=480, qpc_ns=index * 20_000_000)
+        )
+        assert placement.silence_frames == 0
+    assert placer.gaps == []
+    assert placer.written_frames == 15 * 480
+
+
 def test_an_invalid_timestamp_falls_back_to_the_continuous_frame_count():
     placer = _placer(session_qpc_ns=0)
     for p in coherent_stream(count=5, start_qpc_ns=0):

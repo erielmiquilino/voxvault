@@ -158,6 +158,13 @@ def frames_to_ms(frames: int, sample_rate: int) -> int:
     return frames * 1000 // sample_rate
 
 
+#: Reason recorded for a gap the position could not see and the instant did.
+CLOCK_STOOD_STILL = (
+    "o relogio do dispositivo parou enquanto nada tocava; o instante de "
+    "aquisicao recoloca o audio no lugar"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Placement:
     """Where one packet lands on its track."""
@@ -266,6 +273,7 @@ class TrackPlacer:
                     reanchored=True,
                 )
 
+        realigned = self._realign_if_the_clock_stood_still(packet)
         decision = decide_gap(
             expected_position=self.base_position + self.written_frames,
             packet_position=packet.device_position,
@@ -274,10 +282,11 @@ class TrackPlacer:
             threshold_ms=self.threshold_ms,
             discontinuity=packet.discontinuity,
         )
+        reason = decision.reason
+        if realigned and decision.silence_frames:
+            reason = CLOCK_STOOD_STILL
         if decision.gap and decision.silence_frames:
-            self.gaps.append(
-                (self.written_frames, decision.silence_frames, decision.reason)
-            )
+            self.gaps.append((self.written_frames, decision.silence_frames, reason))
         if decision.trim_frames:
             self.duplicated_frames_dropped += decision.trim_frames
         self.written_frames += decision.silence_frames + decision.write_frames
@@ -286,5 +295,28 @@ class TrackPlacer:
             trim_frames=decision.trim_frames,
             write_frames=decision.write_frames,
             gap=decision.gap,
-            reason=decision.reason,
+            reason=reason,
         )
+
+    def _realign_if_the_clock_stood_still(self, packet: CapturePacket) -> bool:
+        """Re-anchor on the packet's own instant when the device clock stopped.
+
+        :func:`decide_gap` compares positions, and a position cannot show a
+        stretch the device clock never counted. Measured on a Bluetooth
+        headset in stereo mode: twelve seconds with nothing playing advanced
+        the position by 20 ms. Placed by position, the next sound would land
+        right after the previous one and the silence would vanish from the
+        timeline -- everything after it twelve seconds early against the other
+        track. The acquisition instant saw all of it, so past the threshold the
+        instant decides where the packet belongs.
+        """
+        assert self.anchor is not None
+        if residual_ns(self.anchor, packet) <= self.threshold_ms * 1_000_000:
+            return False
+        on_timeline = (
+            (packet.qpc_ns - self.session_qpc_ns) * self.sample_rate
+        ) // NS_PER_SECOND
+        self.anchor = Anchor(packet.device_position, packet.qpc_ns, self.sample_rate)
+        self.base_position = packet.device_position - on_timeline
+        self.reanchors += 1
+        return True

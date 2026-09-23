@@ -77,8 +77,24 @@ def test_the_reported_instant_follows_the_device_position(render_endpoint):
         pytest.skip("pacotes insuficientes")
     rate = stream.format.sample_rate
 
+    # A Bluetooth endpoint waking up hands over its first packets slower than
+    # real time -- measured on a stereo headset: 15 packets of 10 ms each, 20 ms
+    # apart, the link starting. That is not the timestamp misbehaving, and what
+    # it adds up to must stay below the gap threshold, or the placer would
+    # fabricate silence out of a start-up. The property itself is about the
+    # stream once it runs.
+    start = usable[0]
+    settled = [p for p in usable if p.qpc_ns - start.qpc_ns >= 500_000_000]
+    if len(settled) < 20:
+        pytest.skip("pacotes insuficientes depois da partida")
+    startup_ms = (
+        (settled[0].qpc_ns - start.qpc_ns)
+        - (settled[0].device_position - start.device_position) * 1_000_000_000 // rate
+    ) / 1e6
+    assert abs(startup_ms) < 200, f"partida acumulou {startup_ms:.1f} ms"
+
     steps = []
-    for previous, current in itertools.pairwise(usable):
+    for previous, current in itertools.pairwise(settled):
         advance = current.device_position - previous.device_position
         implied = advance * 1_000_000_000 // rate
         steps.append(abs((current.qpc_ns - previous.qpc_ns) - implied))
