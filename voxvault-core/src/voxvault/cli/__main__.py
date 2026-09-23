@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC
 from pathlib import Path
 
 from ..layout import available_tracks
@@ -301,13 +300,14 @@ def _bar(level: float, width: int = 12) -> str:
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 
-def _record_through_service(rendezvous, args: argparse.Namespace) -> int:
-    """Drive the recording on the service that already owns the capture.
+def _record_through_service(rendezvous, args: argparse.Namespace, *, log=None) -> int:
+    """Drive the recording on the service that owns the capture, and watch it.
 
-    Opening our own streams would put two processes on the same microphone:
-    the machine-wide claim stops a second *service*, not a command that
-    reaches for the devices directly. So when a service is running, this
-    command becomes one of its clients like every other surface.
+    Watching is the point. The meeting that motivated this lost its second half
+    to a dead headset while the screen showed a counter that had simply stopped
+    moving -- nothing on it said anything was wrong. So a warning from the
+    service goes on a line of its own where it cannot be overwritten, a track
+    gone silent says so, and a meeting that looks finished says that too.
     """
     import time
 
@@ -316,31 +316,75 @@ def _record_through_service(rendezvous, args: argparse.Namespace) -> int:
     )
     if status != 200:
         sys.stderr.write(f"{payload.get('erro', payload)}\n")
+        if log is not None:
+            sys.stderr.write(f"Registro do servico: {log}\n")
         return 1
 
     sys.stdout.write(
-        f"\nGravando pelo servico residente (processo {rendezvous.pid})\n"
-        f"  inicio em {payload.get('atraso_de_inicio_ms', 0):.0f} ms\n"
-        f"  Ctrl+C encerra e envia para transcricao.\n\n"
+        f"\nGravando '{payload.get('titulo') or args.title}'\n"
+        f"  inicio em {payload.get('atraso_de_inicio_ms', 0):.0f} ms "
+        f"(servico {rendezvous.pid})\n"
+        f"  Ctrl+C encerra, comprime e transcreve em segundo plano.\n\n"
     )
 
+    seen_warnings: set[str] = set()
+
+    def say(line: str) -> None:
+        # Clear the live line first, so a warning is never glued to a meter
+        # or overwritten by the next refresh.
+        sys.stdout.write("\r" + " " * 100 + "\r" + line + "\n")
+        sys.stdout.flush()
+
+    for aviso in payload.get("avisos") or []:
+        seen_warnings.add(aviso)
+        say(f"  ! {aviso}")
+
+    meeting_seen = False
+    meeting_end_told = False
     deadline = time.monotonic() + args.seconds if args.seconds > 0 else None
     try:
         while True:
             time.sleep(1.0)
             _s, estado = _service_call(rendezvous, "GET", "/gravacao")
+            if not estado.get("ativa", False):
+                say("  ! a gravacao deixou de estar ativa no servico")
+                break
+
+            for aviso in estado.get("avisos") or []:
+                if aviso not in seen_warnings:
+                    seen_warnings.add(aviso)
+                    say(f"  ! {aviso}")
+
             niveis = estado.get("niveis") or {}
             medidores = "  ".join(
                 f"{trilha} {_bar(dados.get('pico', 0.0))}"
                 for trilha, dados in sorted(niveis.items())
             )
-            mudas = [
-                t for t, d in niveis.items() if d.get("silencio_ha_s", 0) > 30
-            ]
+            # A microphone always delivers something, even room noise, so one
+            # that has gone silent is a problem worth shouting about. The
+            # system track is silent whenever nobody talks, so it only earns a
+            # mention after much longer.
+            mudas = sorted(
+                t for t, d in niveis.items()
+                if d.get("silencio_ha_s", 0) > (30 if t == "mic" else 300)
+            )
+
+            _d, deteccao = _service_call(rendezvous, "GET", "/deteccao")
+            deteccao = deteccao if isinstance(deteccao, dict) else {}
+            if deteccao.get("deteccao"):
+                meeting_seen = True
+                meeting_end_told = False
+            elif meeting_seen and not meeting_end_told and deteccao.get("disponivel"):
+                meeting_end_told = True
+                say(
+                    "  ! a reuniao parece ter terminado: o aplicativo de reuniao "
+                    "soltou o microfone. Ctrl+C para encerrar a gravacao."
+                )
+
             sys.stdout.write(
-                f"\r  {estado.get('duracao_ms', 0) / 1000:7.1f}s  "
-                f"div {estado.get('divergencia_ms', 0):4d}ms  {medidores}"
-                + (f"  MUDA: {', '.join(mudas)}" if mudas else "            ")
+                f"\r  {estado.get('duracao_ms', 0) / 1000:7.1f}s  {medidores}"
+                + (f"  SEM AUDIO: {', '.join(mudas)}" if mudas else "")
+                + " " * 14
             )
             sys.stdout.flush()
             if deadline is not None and time.monotonic() >= deadline:
@@ -359,129 +403,38 @@ def _record_through_service(rendezvous, args: argparse.Namespace) -> int:
         f"  duracao: {fim['duracao_ms'] / 1000:.1f}s\n"
         f"  trilhas: "
         + ", ".join(f"{t} {d / 1000:.1f}s" for t, d in fim["trilhas"].items())
-        + f"\n  divergencia final: {fim['divergencia_ms']} ms\n"
+        + "\n"
     )
     for aviso in fim.get("avisos") or []:
-        sys.stdout.write(f"  aviso: {aviso}\n")
-    sys.stdout.write("\nEnfileirada. Rode 'voxvault queue --run' para transcrever.\n")
+        if aviso not in seen_warnings:
+            sys.stdout.write(f"  ! {aviso}\n")
+    sys.stdout.write(
+        "\nA transcricao roda em segundo plano, no servico. "
+        "Acompanhe com 'voxvault list'.\n"
+    )
     return 0
 
 
 def _cmd_record(args: argparse.Namespace) -> int:
-    import time
-    from datetime import datetime
+    """Record a meeting, always through the resident service.
 
-    from ..service.rendezvous import live_rendezvous
+    There used to be a second path here that captured on its own when no
+    service was running. It had no device supervisor, no suspend handling and
+    no meters, and a real meeting was lost to it: a Bluetooth headset's battery
+    died at 38 minutes, nothing moved to the next device, and the counter sat
+    frozen for three and a half hours while the meeting carried on. One
+    implementation of recording, with every protection, is the fix -- so a
+    missing service is started, not worked around.
+    """
+    from ..service.launch import ensure_running, log_path
 
-    # A running service already owns the capture. Reaching for the devices
-    # here anyway would put two processes on the same microphone.
-    running = live_rendezvous()
-    if running is not None:
-        return _record_through_service(running, args)
-
-    from ..capture.devices import (
-        FLOW_CAPTURE,
-        FLOW_RENDER,
-        resolve_endpoint,
-        role_from_config,
-    )
-    from ..capture.stream import CaptureStream
-    from ..config import POLICY_PINNED
-    from ..session import RecordingSession
-    from ..store import Origin
-    from ..types import MeetingState
-
-    config = _load(args)
-    role = role_from_config(config.device_role)
-
-    streams = {}
-    for track, flow, policy, pinned in (
-        ("mic", FLOW_CAPTURE, config.mic_policy, config.mic_device_id),
-        ("system", FLOW_RENDER, config.system_policy, config.system_device_id),
-    ):
-        try:
-            endpoint = resolve_endpoint(
-                flow=flow,
-                policy_pinned_id=pinned if policy == POLICY_PINNED else "",
-                role=role,
-            )
-        except Exception as exc:
-            sys.stderr.write(f"trilha '{track}': {exc}\n")
-            continue
-        streams[track] = CaptureStream(
-            endpoint.id, loopback=(flow == FLOW_RENDER), name=track
-        )
-        sys.stdout.write(f"  {track:<7} {endpoint.name}\n")
-
-    if not streams:
-        sys.stderr.write(
-            "Nenhum dispositivo de audio disponivel. Rode 'voxvault doctor'.\n"
-        )
-        return 1
-
-    store = _open_store(config)
-    session = RecordingSession(
-        config, title=args.title,
-        mic_stream=streams.get("mic"), system_stream=streams.get("system"),
-    )
+    _load(args)  # fail on a bad configuration before starting anything
     try:
-        latency = session.start()
-    except Exception as exc:
+        running = ensure_running()
+    except RuntimeError as exc:
         sys.stderr.write(f"{exc}\n")
         return 1
-
-    store.create_meeting(
-        uid=session.uid, title=session.title, started_at=session.started_at,
-        directory=session.directory, origin=Origin.RECORDED,
-        state=MeetingState.RECORDING,
-    )
-    sys.stdout.write(
-        f"\nGravando '{session.title}'  (inicio em {latency:.0f} ms)\n"
-        f"  {session.directory}\n"
-        f"  Ctrl+C para encerrar.\n\n"
-    )
-
-    deadline = time.monotonic() + args.seconds if args.seconds > 0 else None
-    try:
-        while True:
-            time.sleep(0.5)
-            sys.stdout.write(
-                f"\r  {session.duration_ms / 1000:7.1f}s  "
-                f"divergencia {session.drift_ms:4d} ms   "
-            )
-            sys.stdout.flush()
-            if deadline is not None and time.monotonic() >= deadline:
-                break
-    except KeyboardInterrupt:
-        pass
-
-    sys.stdout.write("\n\nEncerrando...\n")
-    report = session.stop(compress=not args.no_compress)
-
-    from ..pipeline import TranscriptionPipeline
-
-    store.finish_meeting(
-        session.uid,
-        ended_at=datetime.now(UTC),
-        duration_ms=report.duration_ms,
-    )
-    pipeline = TranscriptionPipeline(config, store)
-    try:
-        pipeline.enqueue(session.uid)
-    except Exception as exc:
-        sys.stderr.write(f"{exc}\n")
-
-    sys.stdout.write(
-        f"Reuniao {session.uid}\n"
-        f"  duracao: {report.duration_ms / 1000:.1f}s\n"
-        f"  trilhas: {', '.join(f'{t} {d/1000:.1f}s' for t, d in report.tracks.items())}\n"
-        f"  divergencia final: {report.drift_ms} ms\n"
-    )
-    for warning in report.warnings:
-        sys.stdout.write(f"  aviso: {warning}\n")
-    sys.stdout.write("\nEnfileirada para transcricao. Rode 'voxvault queue --run'.\n")
-    store.close()
-    return 0
+    return _record_through_service(running, args, log=log_path())
 
 
 def _cmd_import(args: argparse.Namespace) -> int:

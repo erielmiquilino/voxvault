@@ -34,6 +34,9 @@ CHECK_INTERVAL_S = 2.0
 DETECTION_BUDGET_S = 5.0
 #: Recovery budget, counted from the moment the change was detected.
 RECOVERY_BUDGET_S = 30.0
+#: A microphone that has delivered no packet for this long is treated as lost.
+#: Inside the detection budget, with room for one missed poll.
+STALL_S = 4.0
 
 
 class TrackHealth(StrEnum):
@@ -80,10 +83,20 @@ class TrackWatch:
     detected_at_ms: int = 0
     reason: str = ""
     gaps: list = field(default_factory=list)
+    #: Packet count at the last check, and when it last moved. Used only for
+    #: the microphone, which delivers continuously while it is alive.
+    last_packets: int = -1
+    progressed_at: float = 0.0
 
     @property
     def follows_default(self) -> bool:
         return self.policy != POLICY_PINNED
+
+    @property
+    def is_capture(self) -> bool:
+        from ..capture.devices import FLOW_CAPTURE
+
+        return self.flow == FLOW_CAPTURE
 
 
 class DeviceSupervisor:
@@ -152,6 +165,20 @@ class DeviceSupervisor:
             self._begin_recovery(watch, "o dispositivo em uso foi perdido")
             return
 
+        if watch.is_capture and self._stalled(watch, stream):
+            # The case that lost a real meeting: a Bluetooth headset whose
+            # battery died. Not every driver reports that as an error -- the
+            # stream can stay "running" and simply stop delivering. A
+            # microphone is never legitimately silent at the packet level: it
+            # delivers room noise, or zeroes, continuously while it is alive.
+            # The loopback track is exempt, because nothing playing is normal.
+            self._begin_recovery(
+                watch,
+                f"o microfone '{watch.endpoint_name}' parou de entregar audio "
+                f"ha {STALL_S:.0f}s",
+            )
+            return
+
         if not watch.follows_default:
             return  # a pinned track never migrates, by policy
 
@@ -164,6 +191,18 @@ class DeviceSupervisor:
                 f"o padrao de {watch.role} passou a ser '{target.name}'",
                 to_device=target.name,
             )
+
+    def _stalled(self, watch: TrackWatch, stream) -> bool:
+        """True when a capture stream has delivered nothing for too long."""
+        packets = getattr(stream, "packets_captured", None)
+        if packets is None:
+            return False
+        now = time.monotonic()
+        if packets != watch.last_packets:
+            watch.last_packets = packets
+            watch.progressed_at = now
+            return False
+        return now - watch.progressed_at >= STALL_S
 
     def _current_default(self, watch: TrackWatch):
         from ..capture.devices import default_endpoint
@@ -218,6 +257,10 @@ class DeviceSupervisor:
         watch.endpoint_id = endpoint.id
         watch.endpoint_name = endpoint.name
         watch.health = TrackHealth.RECORDING
+        # A fresh stream gets a fair window before it can be judged stalled;
+        # its packet count starts over and has nothing to do with the old one.
+        watch.last_packets = -1
+        watch.progressed_at = time.monotonic()
         watch.gaps.append(DeviceGap(
             track=watch.track,
             started_ms=started_ms,

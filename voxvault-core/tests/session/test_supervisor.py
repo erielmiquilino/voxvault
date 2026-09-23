@@ -317,3 +317,69 @@ def test_a_failing_check_never_kills_the_recording(setup, monkeypatch) -> None:
         assert any("supervisao" in w for w in session._warnings)
     finally:
         supervisor.stop()
+
+
+# -- the case that lost a real meeting ---------------------------------
+
+class CountingStream(FakeStream):
+    """A stream that reports how many packets it has delivered.
+
+    A Bluetooth headset whose battery dies does not always surface as an
+    error: the stream stays "running" and the count simply stops moving.
+    """
+
+    def __init__(self, endpoint_id: str = "mic-1") -> None:
+        super().__init__(endpoint_id)
+        self.packets_captured = 0
+
+    def deliver(self, count: int = 10) -> None:
+        self.packets_captured += count
+
+
+def test_a_microphone_that_stops_delivering_is_treated_as_lost(setup, monkeypatch) -> None:
+    """The headset battery died at 38 minutes; nothing errored and nothing
+    moved to the next device. A microphone is never silent at the packet
+    level while it is alive, so a count that stops moving is a lost device."""
+    import voxvault.session.supervisor as module
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+
+    stream = CountingStream("mic-1")
+    session = FakeSession({"mic": stream})
+    supervisor = DeviceSupervisor(session)
+    supervisor.watch(_watch(track="mic", flow="entrada", endpoint_id="mic-1",
+                            endpoint_name="JBL Tune Flex 2"))
+
+    stream.deliver()
+    supervisor.check()                      # first sight: remember the count
+    clock["now"] += 2
+    stream.deliver()
+    supervisor.check()                      # still moving: healthy
+    assert setup["opened"] == []
+
+    clock["now"] += module.STALL_S + 1      # the battery dies here
+    supervisor.check()
+
+    assert setup["opened"] == ["mic-1"], "a trilha tem de ser reaberta"
+    assert any("parou de entregar" in w for w in session._warnings)
+
+
+def test_a_silent_loopback_is_never_a_stall(setup, monkeypatch) -> None:
+    """Nothing playing is the normal state of the system track."""
+    import voxvault.session.supervisor as module
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+
+    stream = CountingStream("dev-1")
+    session = FakeSession({"system": stream})
+    supervisor = DeviceSupervisor(session)
+    supervisor.watch(_watch())
+
+    supervisor.check()
+    clock["now"] += 600                     # ten minutes of nobody talking
+    supervisor.check()
+
+    assert setup["opened"] == []
+    assert supervisor.watches["system"].health is TrackHealth.RECORDING

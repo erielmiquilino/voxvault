@@ -287,20 +287,38 @@ class RecordingSession:
 
     @property
     def drift_ms(self) -> int:
-        """How far apart the two tracks currently sit on the timeline."""
-        if len(self._writers) < 2:
+        """How misaligned the two tracks are, from their clock residuals.
+
+        Measured as the spread between the tracks' placement errors, not as
+        the difference in their lengths. The length difference was the first
+        version of this, and it was wrong in the most ordinary situation there
+        is: nobody talking. The loopback delivers nothing while nothing plays,
+        so its written length stops growing -- and that read as ever-growing
+        "divergence", firing the alarm every second of every quiet stretch,
+        when the next packet would be placed at its own instant regardless.
+        """
+        residuals = [
+            w.residual_ns for w in self._writers.values() if w.residual_ns is not None
+        ]
+        if len(residuals) < 2:
             return 0
-        positions = [w.timeline_ms for w in self._writers.values()]
-        return max(positions) - min(positions)
+        drift = round((max(residuals) - min(residuals)) / 1_000_000)
+        self._max_drift_ms = max(getattr(self, "_max_drift_ms", 0), drift)
+        return drift
 
     @property
     def warnings(self) -> list[str]:
-        collected = list(self._warnings)
-        if self.drift_ms > self.config.drift_warn_ms:
-            collected.append(
-                f"as trilhas divergiram {self.drift_ms} ms, acima do limite de "
+        drift = self.drift_ms
+        if drift > self.config.drift_warn_ms and not getattr(self, "_drift_warned", False):
+            # Once, with the value at that moment. A warning whose text changes
+            # every second is a new warning every second to anything that
+            # de-duplicates by text -- and a person stops reading those.
+            self._drift_warned = True
+            self._warnings.append(
+                f"as trilhas passaram a divergir {drift} ms, acima do limite de "
                 f"{self.config.drift_warn_ms} ms"
             )
+        collected = list(self._warnings)
         for track, writer in self._writers.items():
             if writer.stats.write_error:
                 collected.append(f"erro de escrita em '{track}': {writer.stats.write_error}")
@@ -451,7 +469,16 @@ class RecordingSession:
         metadata.pauses = [p.as_dict() for p in self._pauses]
         metadata.warnings = warnings
         metadata.alignment = {
-            "divergencia_ms": drift,
+            # The worst the tracks got, not where they happened to end: a
+            # recording can drift and recover, and the peak is what says
+            # whether its timeline can be trusted.
+            "divergencia_ms": max(drift, getattr(self, "_max_drift_ms", 0)),
+            "divergencia_final_ms": drift,
+            "residuo_por_trilha_ms": {
+                track: round(writer.residual_ns / 1_000_000, 1)
+                for track, writer in self._writers.items()
+                if writer.residual_ns is not None
+            },
             "limite_aviso_ms": self.config.drift_warn_ms,
             "atraso_de_inicio_ms": round(self._start_latency_ms, 1),
         }

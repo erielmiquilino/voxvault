@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..capture.anchor import TrackPlacer
+from ..capture.anchor import TrackPlacer, residual_ns
 from ..capture.format import StreamFormat
 from ..types import CapturePacket
 from .wavfile import WavFile
@@ -89,6 +89,9 @@ class TrackWriter:
         self._resampler = None
         self._peak = 0.0
         self._silent_since = time.monotonic()
+        #: How far this track's placement departs from wall-clock time, from
+        #: its latest packet. See :meth:`write_packet`.
+        self.residual_ns: int | None = None
         self._handle: WavFile | None = WavFile(
             path, sample_rate=TARGET_RATE, channels=TARGET_CHANNELS
         )
@@ -159,6 +162,8 @@ class TrackWriter:
             already_ms * source_format.sample_rate / 1000
         )
         self._resampler = None
+        # The old device's error says nothing about the new one.
+        self.residual_ns = None
         return already_ms
 
     def take_level(self) -> float:
@@ -253,6 +258,16 @@ class TrackWriter:
         if self._paused:
             return
         placement = self.placer.place(packet)
+
+        if packet.timestamp_valid and self.placer.anchor is not None:
+            # The track's placement error, not its length. Audio lands where
+            # its device position says; the packet's acquisition instant says
+            # where it truly belongs; the difference is how far this track has
+            # drifted from wall-clock time. Comparing *lengths* instead would
+            # read an idle loopback -- nothing playing, so nothing delivered --
+            # as misalignment, which it is not: the next packet is placed at
+            # its own instant and the gap is filled.
+            self.residual_ns = residual_ns(self.placer.anchor, packet)
 
         if placement.gap:
             self.stats.gaps += 1

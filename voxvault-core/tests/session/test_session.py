@@ -47,10 +47,12 @@ class FakeStream:
         armed_qpc_ns: int = 0,
         fail_to_start: str = "",
         endpoint_id: str = "endpoint",
+        skew: float = 0.0,
     ) -> None:
         self.format = FORMAT
         self.endpoint_id = endpoint_id
         self.armed_qpc_ns = armed_qpc_ns
+        self.skew = skew
         self.fail_to_start = fail_to_start
         self.started = False
         self.stopped = False
@@ -82,7 +84,10 @@ class FakeStream:
             )
             produced.append(CapturePacket(
                 data=payload, frames=PACKET_FRAMES, device_position=position,
-                qpc_ns=self.armed_qpc_ns + position * NS_PER_FRAME,
+                # With skew, acquisition instants run away from what the
+                # device position implies -- a device whose clock is off.
+                qpc_ns=self.armed_qpc_ns
+                + round(position * NS_PER_FRAME * (1 + self.skew)),
                 discontinuity=False,
             ))
             self._next_position += PACKET_FRAMES
@@ -254,16 +259,51 @@ def test_streams_are_stopped_when_the_session_stops(config) -> None:
     assert mic.stopped and system.stopped
 
 
-def test_drift_above_the_threshold_becomes_a_warning(config) -> None:
+def test_a_quiet_track_is_not_a_misaligned_track(config) -> None:
+    """The ordinary case that the first drift measure got wrong.
+
+    Nobody talking means nothing playing, and the loopback then delivers
+    nothing at all -- so its written length stops growing. Measuring drift as a
+    length difference read that as ever-growing misalignment and raised the
+    alarm every second of every quiet stretch of a real meeting. It is not
+    misalignment: the next packet lands at its own instant.
+    """
     config.drift_warn_ms = 50
     mic, system = FakeStream(), FakeStream()
     session = RecordingSession(config, uid="r", mic_stream=mic, system_stream=system)
     session.start()
     try:
-        mic.feed(100)       # one track gets a second of audio
-        system.feed(1)      # the other barely anything
+        mic.feed(100)       # one second of microphone
+        system.feed(1)      # the system track barely delivers: nobody talking
+        assert _wait_for(lambda: session.duration_ms >= 900)
+        assert session.drift_ms <= 5, "trilha quieta nao e trilha desalinhada"
+        assert not any("divergir" in w for w in session.warnings)
+    finally:
+        session.stop(compress=False)
+
+
+def test_a_skewed_clock_is_measured_and_warned_once(config) -> None:
+    """Real drift: one device's clock runs away from wall time.
+
+    Its packets carry acquisition instants that pull ahead of what their
+    device positions imply, and that departure is exactly how far its audio is
+    being placed from where it truly belongs.
+    """
+    config.drift_warn_ms = 50
+    mic = FakeStream()
+    system = FakeStream(skew=0.10)   # this device's clock is 10% off
+    session = RecordingSession(config, uid="r", mic_stream=mic, system_stream=system)
+    session.start()
+    try:
+        mic.feed(100)
+        system.feed(100)
         assert _wait_for(lambda: session.drift_ms > 50)
-        assert any("divergiram" in w for w in session.warnings)
+        # Read twice: the warning must appear once, with a stable text, or
+        # anything de-duplicating by text shows a new alarm every second.
+        first = [w for w in session.warnings if "divergir" in w]
+        second = [w for w in session.warnings if "divergir" in w]
+        assert len(first) == 1
+        assert first == second
     finally:
         session.stop(compress=False)
 
