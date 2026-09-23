@@ -11,7 +11,7 @@ nas duas colunas. Onde não está, o motivo está dito.
 
 | | |
 |---|---|
-| Testes | 551 em Python e 68 em Rust, todos passando, inclusive os de áudio e GPU; o CI roda os que não pedem áudio nem GPU |
+| Testes | 551 em Python e 78 em Rust, todos passando, inclusive os de áudio e GPU; o CI roda os que não pedem áudio nem GPU |
 | Lint | `ruff` limpo em `src` e `tests` |
 | Código | 21.281 linhas de fonte entre núcleo e aplicativo, 8.331 de teste |
 | Subida da linha de comando | 213 ms |
@@ -382,10 +382,12 @@ nenhum outro programa possa gravar abrindo um endereço.
   vez, a perda e a troca de cada trilha; juntar as duas de cada trilha num aviso
   só, e pôr acentos nas mensagens que vêm do núcleo ("recuperando por ate
   30s"), deixaria a troca menos ruidosa.
-- **A trilha do sistema segue o padrão de comunicações.** Com os padrões de
-  saída divididos — aqui, depois de tirar o fone, comunicações no monitor e
-  multimídia na saída digital —, um som tocado no padrão multimídia, como o de
-  uma chamada no navegador, não entra na gravação.
+- **A trilha do sistema segue o padrão de comunicações**, por projeto, e o
+  diagnóstico avisa quando os padrões de saída se dividem — aqui, depois de
+  tirar o fone, comunicações no monitor e multimídia na saída digital — e
+  aponta `device_role` para trocar o papel. Nesse caso, um som tocado só no
+  padrão multimídia, como o de uma chamada no navegador, fica fora da
+  gravação.
 
 ### O áudio que parou era o antivírus
 
@@ -400,8 +402,8 @@ causa, e o README e as notas da release explicam o que fazer.
 
 ## Distribuição pública
 
-**Implementada e verificada instalada, nesta máquina, de ponta a ponta.** O
-instalador leva o núcleo e o `uv`, não Python: o preparo do primeiro uso monta
+**Implementada, verificada instalada de ponta a ponta e publicada como
+0.1.0.** O instalador leva o núcleo e o `uv`, não Python: o preparo do primeiro uso monta
 o ambiente em `%USERPROFILE%\.voxvault\runtime` a partir do `uv.lock`
 versionado. O repositório é público em `github.com/erielmiquilino/voxvault`,
 com o CI verde e a `main` protegida como a do `ia-monitor`.
@@ -527,6 +529,13 @@ dispararia dois preparos seguidos.
   instalado por cima, com o carimbo do ambiente envelhecido e todos os
   proxies mortos: o aplicativo refez o ambiente pelo cache, pôs o núcleo novo
   e abriu a interface em cerca de 8 s, sem download.
+- **A 0.1.0 publicada (11.4).** A tag `v0.1.0`, enviada com a confirmação do
+  usuário, gerou a release "VoxVault 0.1.0" em
+  `github.com/erielmiquilino/voxvault/releases/tag/v0.1.0`, com
+  `VoxVault-0.1.0-setup.exe` (13,1 MB) e `SHA256SUMS.txt`: a soma confere com
+  o arquivo baixado da própria release, e as notas trazem o texto permanente.
+  Esse instalador, posto no perfil real depois da desinstalação, fez o preparo
+  do primeiro uso em cerca de 1 minuto e é o que fica instalado.
 
 ### Quatro defeitos que só a instalação mostrou
 
@@ -570,7 +579,12 @@ rodadas —, e o teste passou a ler por ele.
 
 ### Em aberto
 
-- A tag `v0.1.0` e a release pública (11.4), que esperam confirmação.
+- **As somas da 0.1.0 saíram com CRLF**, e o `sha256sum -c` do Linux não as
+  lê — o `Get-FileHash` que as notas indicam lê. O workflow grava LF a partir
+  da próxima versão.
+- **As notas publicadas da 0.1.0 não citam o endereço `voxvault:`**, que o
+  clique nas notificações passou a registrar; o texto permanente e o README já
+  citam.
 
 ## Decisões que valem ser lembradas
 

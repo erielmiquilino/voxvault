@@ -175,6 +175,9 @@ A busca ignora acentuação nos dois sentidos: `manutencao` encontra
   áudio, título de janela, endereço nem conteúdo algum.
 - O aplicativo conversa com o serviço local só pela interface de loopback, com
   um segredo gerado a cada início.
+- Clicar numa notificação abre um endereço `voxvault:`, registrado para o seu
+  usuário em `HKCU\Software\Classes` e removido na desinstalação. Um endereço
+  só abre a janela; gravar, só pelo botão "Gravar" da própria notificação.
 
 Gravar uma conversa pode exigir avisar os participantes, conforme a jurisdição
 e a política da sua empresa. A ferramenta não faz esse aviso por você.

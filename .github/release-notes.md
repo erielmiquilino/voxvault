@@ -60,6 +60,10 @@ interrompido continua de onde parou.
   (configuração e ambiente) e a pasta de dados que você escolher, por padrão
   `%USERPROFILE%\VoxVault`.
 - **Início com o Windows:** só se você ligar, em Configurações.
+- **Endereço `voxvault:`:** registrado para o seu usuário em
+  `HKCU\Software\Classes`, para que clicar numa notificação abra a reunião. Um
+  endereço só abre a janela; gravar, só pelo botão "Gravar" da própria
+  notificação.
 
-A desinstalação remove o aplicativo, `%USERPROFILE%\.voxvault` e o início com
-o Windows, e mantém a pasta de dados intacta.
+A desinstalação remove o aplicativo, `%USERPROFILE%\.voxvault`, o endereço
+`voxvault:` e o início com o Windows, e mantém a pasta de dados intacta.

@@ -121,9 +121,12 @@ jobs:
           if (-not $setup) { throw "instalador NSIS nao encontrado" }
           Copy-Item $setup.FullName "dist/VoxVault-$versao-setup.exe"
 
-          Get-ChildItem dist -File | Where-Object Name -ne "SHA256SUMS.txt" | ForEach-Object {
+          $somas = Get-ChildItem dist -File | Where-Object Name -ne "SHA256SUMS.txt" | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
-          } | Set-Content dist/SHA256SUMS.txt -Encoding ascii
+          }
+          # LF, como o sha256sum -c le: com CRLF o nome do arquivo leva um \r,
+          # e a conferencia falha -- como falhou na 0.1.0.
+          [IO.File]::WriteAllText("$PWD/dist/SHA256SUMS.txt", ($somas -join "`n") + "`n")
 
           "versao=$versao" >> $env:GITHUB_OUTPUT
           # As notas permanentes citam o arquivo de forma genérica; as
