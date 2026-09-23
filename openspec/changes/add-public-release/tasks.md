@@ -36,7 +36,7 @@
 
 - [x] 7.1 Configurar `bundle.resources`, `installMode: "currentUser"` e `installerHooks` no `tauri.conf.json`; verificar que o instalador gerado tem no máximo 40 MB e que a pasta instalada contém `recursos\nucleo` só com `.py`, pyproject, lock, README e LICENSE, além de `recursos\uv\uv.exe` e `preparo.json`.
 - [x] 7.2 Conferir no `installer.nsi` gerado a variável de modo de atualização e o AUMID do atalho do menu Iniciar; implementar `windows/ganchos.nsh` (decisão 10), definindo o AUMID no pós-instalação se o modelo do Tauri não o fizer; verificar que uma notificação do aplicativo instalado aparece com o nome VoxVault.
-- [ ] 7.3 Verificar a desinstalação: com uma gravação ativa é recusada com a mensagem; sem gravação, remove `%USERPROFILE%\.voxvault` e o valor de `Run`, mantém a pasta de dados intacta e informa onde ela está.
+- [x] 7.3 Verificar a desinstalação: com uma gravação ativa é recusada com a mensagem; sem gravação, remove `%USERPROFILE%\.voxvault` e o valor de `Run`, mantém a pasta de dados intacta e informa onde ela está.
 - [x] 7.4 Verificar a atualização: instalar a 0.1.0, preparar, instalar uma 0.1.1 de ensaio gerada localmente, e confirmar que o ambiente, o modelo e o início automático sobrevivem e que o aplicativo abre sem baixar nada.
 
 ## 8. CI e release

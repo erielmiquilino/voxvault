@@ -269,7 +269,11 @@ silenciado duas vezes e o fone desconectado no meio —, 685 amostras:
 **0,20% de processador em média, 0,34% na pior janela de um minuto, 65,9 MB em
 média e 70,2 MB de pico**, contra 1,14% e 1,66% medidos com a janela aberta e
 o teto de 250 MB. As duas trilhas decodificam inteiras até o fim, e a hora foi
-transcrita na GPU em cerca de 70 s depois de encerrar.
+transcrita na GPU em cerca de 70 s depois de encerrar. A trilha do sistema,
+porém, terminou mais longa que a reunião — o primeiro defeito logo abaixo.
+Corrigido, uma gravação com dois bipes tocados em instantes conhecidos teve a
+trilha do sistema igual aos metadados (+0,001 s) e os bipes a no máximo
+0,14 s do esperado.
 
 ### Quatro defeitos encontrados medindo
 
@@ -333,6 +337,10 @@ Depois que o áudio voltou, no aplicativo instalado e recolhido na bandeja:
   as duas trilhas a trocar de dispositivo em 2 s — o microfone para o da
   webcam, o áudio do sistema para o monitor —, com um aviso da perda e um da
   troca em cada trilha, e a gravação seguiu sem divergência entre elas.
+- **Clique numa notificação.** Com o aplicativo na bandeja, o usuário clicou
+  em "Transcrição concluída" na central de notificações, e a janela abriu
+  direto na reunião. O mesmo endereço aberto pelo Explorer, como o Windows faz
+  no clique, abriu a reunião no processo que já rodava, sem outro.
 
 ### Dois defeitos da verificação instalada
 
@@ -370,10 +378,6 @@ nenhum outro programa possa gravar abrindo um endereço.
 
 - **A sugestão de reunião detectada** com o botão "Gravar": pedia uma chamada de
   teste num aplicativo reconhecido, e ficou para depois, por decisão do usuário.
-- **O clique numa notificação** abrindo a reunião: a decisão que ele aciona foi
-  separada numa função e testada; a notificação de uma transcrição concluída
-  com o aplicativo na bandeja chegou 1 s depois do fim dela, e o clique pelo
-  Windows depende de alguém clicar.
 - **Quatro avisos por troca de fone.** Tirar um fone com microfone gera, de uma
   vez, a perda e a troca de cada trilha; juntar as duas de cada trilha num aviso
   só, e pôr acentos nas mensagens que vêm do núcleo ("recuperando por ate
@@ -502,7 +506,11 @@ dispararia dois preparos seguidos.
   gravação em andamento no VoxVault. Encerre-a antes de desinstalar", nada
   removido e a gravação seguindo. Sem gravação: `%USERPROFILE%\.voxvault`, o
   valor `Run`, o atalho e a entrada em Programas removidos, o serviço parado,
-  e `D:\VoxVault` intacta.
+  e `D:\VoxVault` intacta. Depois da correção do gancho (7.3), a mensagem
+  final diz "O VoxVault foi removido. Suas gravações foram mantidas em
+  D:\VoxVault.", e saem também o esquema `voxvault:`, os dois caches do
+  WebView2 e a pasta de instalação — as seis reuniões, os modelos e o banco
+  ficam onde estavam.
 - **Publicação.** O ensaio por dispatch produz o instalador e o
   `SHA256SUMS.txt` como artefatos, sem tag nem versão; a soma confere com o
   arquivo baixado.
@@ -562,8 +570,6 @@ rodadas —, e o teste passou a ler por ele.
 
 ### Em aberto
 
-- A mensagem final da desinstalação com a pasta de dados, depois da correção
-  do gancho (7.3).
 - A tag `v0.1.0` e a release pública (11.4), que esperam confirmação.
 
 ## Decisões que valem ser lembradas

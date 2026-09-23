@@ -24,7 +24,7 @@
 
 - [x] 4.1 Integrar `tauri-winrt-notification` com a escolha de AUMID do design (identificador instalado, PowerShell fora de instalação) e um comando de depuração que dispara cada categoria; verificar que as seis aparecem no desenvolvimento.
 - [x] 4.2 Notificações de gravação iniciada e encerrada pelas transições de estado, com deduplicação pelo `uid` da gravação; verificar que iniciar pela bandeja produz exatamente uma notificação e que iniciar por `voxvault record` também produz uma.
-- [ ] 4.3 Notificações de transcrição concluída e falha por `/eventos`, com o primeiro `ultimo` apenas registrado e o clique abrindo a reunião; verificar que abrir o aplicativo depois de transcrições concluídas não notifica nada, e que uma transcrição que termina com o aplicativo na bandeja notifica e abre a reunião ao clique.
+- [x] 4.3 Notificações de transcrição concluída e falha por `/eventos`, com o primeiro `ultimo` apenas registrado e o clique abrindo a reunião; verificar que abrir o aplicativo depois de transcrições concluídas não notifica nada, e que uma transcrição que termina com o aplicativo na bandeja notifica e abre a reunião ao clique.
 - [x] 4.4 Avisos de captura: entradas de dispositivo em `/gravacao.avisos` e `silencio_ha_s ≥ 60` no microfone, uma vez por episódio; verificar com um microfone mudo pelo Windows durante uma gravação — uma notificação em 60 s, nenhuma nova até o sinal voltar e faltar de novo — e com a sala em silêncio e o microfone vivo, sem notificação.
 - [ ] 4.5 Reunião detectada com o botão "Gravar", expirando em 2 minutos para abrir a janela; verificar abrindo uma chamada de teste num aplicativo reconhecido com o VoxVault na bandeja: a notificação aparece, "Gravar" inicia a gravação, e acioná-la depois de 2 minutos só abre a janela.
 - [x] 4.6 Chaves das seis categorias nas preferências, respeitadas por todas as fontes; verificar desligando "gravação iniciada": iniciar não notifica, e as demais continuam.
@@ -39,5 +39,5 @@
 ## 6. Medição e registro
 
 - [x] 6.1 Estender `tools/medir-custo.ps1` com o modo `bandeja`, sem janela, e medir 10 minutos ocioso na bandeja; verificar que a memória somada fica em até 100 MB e o processador médio em até 1%.
-- [ ] 6.2 Medir uma gravação de 60 minutos com o aplicativo recolhido na bandeja; verificar que a memória somada fica em até 250 MB, que o processador não passa do medido com a janela aberta e que a gravação termina íntegra.
+- [x] 6.2 Medir uma gravação de 60 minutos com o aplicativo recolhido na bandeja; verificar que a memória somada fica em até 250 MB, que o processador não passa do medido com a janela aberta e que a gravação termina íntegra.
 - [x] 6.3 Atualizar `docs/estado-da-implementacao.md` e o comentário de módulo de `tray.rs`, que hoje declara que a bandeja morre com a janela; verificar que ambos descrevem o comportamento residente e citam as medições.
