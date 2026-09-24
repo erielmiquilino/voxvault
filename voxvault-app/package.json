@@ -1,6 +1,6 @@
 {
   "name": "voxvault-app",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Desktop surface for the VoxVault local meeting recorder.",
   "type": "module",
