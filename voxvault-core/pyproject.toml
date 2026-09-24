@@ -1,6 +1,6 @@
 [project]
 name = "voxvault-core"
-version = "0.1.1"
+version = "0.1.2"
 description = "Grava, transcreve e indexa reunioes localmente no Windows, sem depender da plataforma de reuniao."
 readme = "README.md"
 # Piso vindo do numpy, que exige 3.12. Nao ha teto: o soxr publica wheel de

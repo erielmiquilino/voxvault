@@ -1,6 +1,6 @@
 [package]
 name = "voxvault-app"
-version = "0.1.1"
+version = "0.1.2"
 description = "Desktop surface for the VoxVault local meeting recorder"
 authors = ["Eriel Miquilino"]
 edition = "2021"
