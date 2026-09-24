@@ -12,12 +12,23 @@ Two settings here are not tuning knobs but correctness requirements:
     Conditioning each window on the previous decode lets a single error loop
     through the rest of the audio. A meeting is long enough for that to ruin
     everything after the first mistake.
+
+``word_timestamps=True``, and segments split at long pauses
+    Voice activity detection hands the model the speech with the silence cut
+    out, so two utterances minutes apart sit side by side and can come back
+    as one segment. Found on a real meeting: a five-word line whose first
+    word was said at 16.6 s and the other four at 333 s, shown as one line
+    lasting five minutes -- and every line said in between marked as
+    overlapping it. Each word keeps its own instant, so a pause longer than
+    any within a sentence splits the segment there. Measured on that meeting:
+    no cost on the GPU, 8% more time on the CPU.
 """
 
 from __future__ import annotations
 
 import os
 import time
+from itertools import pairwise
 from pathlib import Path
 
 from ..config import Config
@@ -41,6 +52,39 @@ from .capability import (
 from .media import normalized_audio, probe_duration_ms
 
 ENGINE_NAME = "faster-whisper"
+#: A pause between two words longer than this starts another segment. Within
+#: a segment the words of that meeting were 0.1-0.2 s apart at the 95th
+#: percentile; the merged utterances were minutes apart.
+SPLIT_GAP_S = 2.0
+
+
+def split_at_pauses(item, max_gap_s: float = SPLIT_GAP_S) -> list[tuple[int, int, str]]:
+    """One decoded segment as the utterances it holds: ``(start_ms, end_ms, text)``.
+
+    Split where two consecutive words are more than ``max_gap_s`` apart; each
+    piece spans its own first and last word. A segment without words keeps
+    its own bounds. Empty text yields nothing: the contract forbids it.
+    """
+
+    def ms(seconds: float) -> int:
+        return max(0, round(seconds * 1000))
+
+    words = [w for w in (getattr(item, "words", None) or []) if (w.word or "").strip()]
+    if not words:
+        text = (item.text or "").strip()
+        return [(ms(item.start), ms(item.end), text)] if text else []
+
+    pieces = [[words[0]]]
+    for previous, word in pairwise(words):
+        if word.start - previous.end > max_gap_s:
+            pieces.append([])
+        pieces[-1].append(word)
+    result = []
+    for piece in pieces:
+        text = "".join(w.word for w in piece).strip()
+        if text:
+            result.append((ms(piece[0].start), ms(piece[-1].end), text))
+    return result
 
 
 def _model_not_on_disk(exc: Exception) -> bool:
@@ -115,7 +159,7 @@ class LocalWhisperEngine:
                     vad_parameters={"min_silence_duration_ms": 500},
                     condition_on_previous_text=False,
                     beam_size=5,
-                    word_timestamps=False,
+                    word_timestamps=True,
                 )
             except RuntimeError as exc:
                 raise self._translate_runtime_error(exc) from exc
@@ -131,14 +175,10 @@ class LocalWhisperEngine:
                             f"processar todo o audio. Nenhum resultado parcial "
                             f"e devolvido como sucesso."
                         )
-                    text = (item.text or "").strip()
-                    if not text:
-                        continue  # the contract forbids empty segments
-                    start_ms = max(0, round(item.start * 1000))
-                    end_ms = round(item.end * 1000)
-                    if end_ms <= start_ms:
-                        end_ms = start_ms + 1
-                    collected.append(Segment(start_ms, end_ms, text))
+                    for start_ms, end_ms, text in split_at_pauses(item):
+                        if end_ms <= start_ms:
+                            end_ms = start_ms + 1
+                        collected.append(Segment(start_ms, end_ms, text))
             except TranscriptionInterrupted:
                 raise
             except RuntimeError as exc:

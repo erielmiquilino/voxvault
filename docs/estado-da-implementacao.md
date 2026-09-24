@@ -597,6 +597,20 @@ instalada aqui por cima da 0.1.0, refez o ambiente pelo cache sozinha e
 responde 0.1.1 no serviço e no MCP; as somas dela já saem com LF, e o
 `sha256sum -c` as confere.
 
+**Falas de minutos depois na mesma linha.** Na primeira reunião real gravada
+com a 0.1.1 — um stand-up de 13 minutos —, 148 dos 181 trechos saíram marcados
+como "fala sobreposta". Um trecho do microfone ia de 16 s a 318 s: a primeira
+palavra dita aos 16,6 s e as outras quatro aos 333 s. A detecção de voz entrega
+ao modelo a fala sem os silêncios, falas separadas por minutos ficam lado a
+lado, e o modelo as devolvia como uma linha só — com o texto no lugar errado e
+tudo o que foi dito entre elas marcado como sobreposto. Os tempos por palavra
+passam a ser calculados, e um trecho é partido onde duas palavras seguidas
+estão a mais de 2 s; dentro de um trecho, 95% das palavras ficam a menos de
+0,2 s. Reprocessada pelo motor corrigido, a mesma reunião ficou sem nenhum
+trecho acima de 30 s e com 19 sobreposições, as de verdade, sem perder palavra
+(278 e 692 antes, 297 e 686 depois). O custo, medido nela: nenhum na GPU, 8%
+na CPU.
+
 ### Em aberto
 
 - **As somas da 0.1.0 saíram com CRLF**, e o `sha256sum -c` do Linux não as
