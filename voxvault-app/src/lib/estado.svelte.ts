@@ -180,6 +180,11 @@ export function registrarAviso(texto: string, instanteMs: number | null = null) 
 export function zerarGravacao() {
   gravacao.estado = "ocioso";
   gravacao.uid = null;
+  // The field shows the recording's own title while it runs; left there, the
+  // next recording took it too -- one started at 19:37 was called "as 19:31".
+  // Only a recording ending calls this, so a title typed for the next one
+  // while idle stays.
+  gravacao.titulo = "";
   gravacao.decorridoMs = 0;
   gravacao.avisos = [];
   for (const trilha of ["mic", "system"] as const) {
