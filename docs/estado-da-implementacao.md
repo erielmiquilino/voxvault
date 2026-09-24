@@ -617,7 +617,9 @@ como prompt inicial, e com o texto anterior não levado adiante o prompt é
 zerado depois da primeira janela. Vai agora como *hotwords*, que entram em
 toda janela: na mesma reunião, com o vocabulário do usuário, um nome de
 produto antes ouvido errado apareceu certo duas vezes e mais dois termos
-foram corrigidos, com a contagem de palavras igual (984 contra 993).
+foram corrigidos, com a contagem de palavras igual (984 contra 993). Saiu na
+0.1.3, que instalada aqui refez a reunião com esses três acertos — 180
+trechos, 20 sobreposições, nenhum acima de 10 s.
 
 ### Em aberto
 
