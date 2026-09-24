@@ -154,7 +154,11 @@ class LocalWhisperEngine:
                 raw_segments, _info = model.transcribe(
                     str(usable),
                     language=language or None,
-                    initial_prompt=vocabulary.strip() or None,
+                    # Hotwords go into the prompt of every window. An initial
+                    # prompt reaches only the first one: with the previous text
+                    # not carried over, the domain vocabulary of a meeting
+                    # counted for its first 30 s of speech and nothing after.
+                    hotwords=vocabulary.strip() or None,
                     vad_filter=True,
                     vad_parameters={"min_silence_duration_ms": 500},
                     condition_on_previous_text=False,

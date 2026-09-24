@@ -609,7 +609,15 @@ estão a mais de 2 s; dentro de um trecho, 95% das palavras ficam a menos de
 0,2 s. Reprocessada pelo motor corrigido, a mesma reunião ficou sem nenhum
 trecho acima de 30 s e com 19 sobreposições, as de verdade, sem perder palavra
 (278 e 692 antes, 297 e 686 depois). O custo, medido nela: nenhum na GPU, 8%
-na CPU.
+na CPU. Saiu na 0.1.2, que instalada aqui refez a mesma reunião sem nenhum
+trecho acima de 9 s e com 23 sobreposições, as de verdade.
+
+**O vocabulário de domínio só valia para os primeiros 30 s.** Ele ia ao modelo
+como prompt inicial, e com o texto anterior não levado adiante o prompt é
+zerado depois da primeira janela. Vai agora como *hotwords*, que entram em
+toda janela: na mesma reunião, com o vocabulário do usuário, um nome de
+produto antes ouvido errado apareceu certo duas vezes e mais dois termos
+foram corrigidos, com a contagem de palavras igual (984 contra 993).
 
 ### Em aberto
 
