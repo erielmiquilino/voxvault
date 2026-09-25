@@ -376,8 +376,9 @@ nenhum outro programa possa gravar abrindo um endereço.
 
 ### Em aberto
 
-- **A sugestão de reunião detectada** com o botão "Gravar": pedia uma chamada de
-  teste num aplicativo reconhecido, e ficou para depois, por decisão do usuário.
+- **Resolvido: a sugestão de reunião detectada** com o botão "Gravar". Pedia
+  uma chamada num aplicativo reconhecido; o usuário a testou numa chamada real e
+  confirmou que tudo correu bem.
 - **Quatro avisos por troca de fone.** Tirar um fone com microfone gera, de uma
   vez, a perda e a troca de cada trilha; juntar as duas de cada trilha num aviso
   só, e pôr acentos nas mensagens que vêm do núcleo ("recuperando por ate
