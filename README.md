@@ -138,10 +138,12 @@ dito, e um agente capaz de editá-la a tornaria inútil como registro.
 
 ## Linha de comando
 
-O aplicativo usa o mesmo núcleo que a linha de comando. O executável fica em
-`%USERPROFILE%\.voxvault\runtime\ambiente\Scripts\voxvault.exe`. O VoxVault não
-mexe no seu `PATH`; se quiser chamá-lo só pelo nome, acrescente essa pasta por
-conta própria.
+O aplicativo usa o mesmo núcleo que a linha de comando, e ela é chamada pelo
+nome: o preparo põe no fim do `PATH` do seu usuário a pasta
+`%USERPROFILE%\.voxvault\bin`, que tem só dois executáveis — `voxvault` e
+`voxvault-mcp`. O Python do ambiente e as ferramentas das dependências não
+entram no `PATH`, então o seu `python`, se houver, continua sendo o seu. Um
+terminal aberto antes do preparo não vê a pasta: abra outro.
 
 ```bash
 voxvault doctor                       # cada pré-requisito, e o que fazer se falhar
@@ -203,9 +205,10 @@ continua descrevendo a si mesma.
 
 Pelo "Adicionar ou remover programas" do Windows. A desinstalação é recusada
 enquanto houver uma gravação em andamento. Ela remove o aplicativo,
-`%USERPROFILE%\.voxvault` (ambiente, configuração e preferências) e o início
-com o Windows, e **não toca na pasta de dados**: ao terminar, diz onde suas
-gravações ficaram. Uma atualização nunca faz essas remoções.
+`%USERPROFILE%\.voxvault` (ambiente, configuração e preferências), a pasta do
+VoxVault no seu `PATH` e o início com o Windows, e **não toca na pasta de
+dados**: ao terminar, diz onde suas gravações ficaram. Uma atualização nunca
+faz essas remoções.
 
 ## Arquitetura
 

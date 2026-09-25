@@ -105,6 +105,12 @@ FunctionEnd
     Call un.VoxPastaDeDados
     Pop $VoxDados
   ${EndIf}
+  ; `voxvault` out of the user's PATH, by the app itself: a PATH edited
+  ; through NSIS strings is cut at their length. Only here, past the refusal.
+  ${If} $UpdateMode <> 1
+    nsExec::Exec '"$INSTDIR\${MAINBINARYNAME}.exe" --remover-do-path'
+    Pop $0
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

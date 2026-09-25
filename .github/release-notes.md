@@ -60,10 +60,15 @@ interrompido continua de onde parou.
   (configuração e ambiente) e a pasta de dados que você escolher, por padrão
   `%USERPROFILE%\VoxVault`.
 - **Início com o Windows:** só se você ligar, em Configurações.
+- **`PATH` do seu usuário:** o preparo acrescenta, no fim, a pasta
+  `%USERPROFILE%\.voxvault\bin`, só com `voxvault` e `voxvault-mcp`, para a
+  linha de comando ser chamada pelo nome. O Python do ambiente não entra no
+  `PATH`.
 - **Endereço `voxvault:`:** registrado para o seu usuário em
   `HKCU\Software\Classes`, para que clicar numa notificação abra a reunião. Um
   endereço só abre a janela; gravar, só pelo botão "Gravar" da própria
   notificação.
 
 A desinstalação remove o aplicativo, `%USERPROFILE%\.voxvault`, o endereço
-`voxvault:` e o início com o Windows, e mantém a pasta de dados intacta.
+`voxvault:`, a pasta do VoxVault no `PATH` e o início com o Windows, e mantém a
+pasta de dados intacta.

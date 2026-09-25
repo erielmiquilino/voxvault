@@ -928,6 +928,10 @@ pub fn preparar(app: &AppHandle, pasta: Option<String>) -> Result<(), FalhaDoPre
         mensagem: format!("O ambiente está pronto, mas o registro do preparo não foi gravado: {err}"),
         acao: "Clique em Retomar.".into(),
     })?;
+    // `voxvault` in the terminal: a convenience, never a reason to fail.
+    if let Err(erro) = crate::caminho::integrar(&runtime.join("ambiente").join("Scripts")) {
+        eprintln!("voxvault fora do PATH: {erro}");
+    }
     avisar(app, "verificacao", "concluida", "");
     Ok(())
 }

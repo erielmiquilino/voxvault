@@ -15,6 +15,7 @@
 mod atalho;
 mod ativacao;
 mod avisos;
+mod caminho;
 mod cli;
 mod commands;
 mod hardware;
@@ -25,6 +26,7 @@ mod library;
 mod paths;
 mod prefs;
 mod preparo;
+mod registro;
 mod residente;
 mod service;
 mod system;
@@ -51,6 +53,17 @@ pub const ARGUMENTO_BANDEJA: &str = "--bandeja";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The uninstaller's request, answered before anything that would start
+    // the app -- the single-instance plugin would hand it to a running window.
+    if std::env::args().any(|arg| arg == caminho::ARGUMENTO_REMOVER) {
+        std::process::exit(match caminho::remover() {
+            Ok(()) => 0,
+            Err(erro) => {
+                eprintln!("{erro}");
+                1
+            }
+        });
+    }
     let cliente = service::ServiceClient::new();
     let para_a_saida = cliente.clone();
 

@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::avisos::{Destino, VALIDADE_DA_SUGESTAO};
+use crate::registro;
 
 pub const ESQUEMA: &str = "voxvault";
 /// Where Windows looks the scheme up, for this user only.
@@ -133,91 +134,15 @@ pub fn registrar_esquema() -> Result<(), String> {
     let exe = exe.display().to_string();
     let comando = format!("\"{exe}\" \"%1\"");
     let comando_chave = format!(r"{CHAVE}\shell\open\command");
-    if registro::ler(&comando_chave, None).as_deref() == Some(comando.as_str()) {
+    let atual = registro::ler(&comando_chave, None).ok().flatten();
+    if atual.map(|(valor, _)| valor).as_deref() == Some(comando.as_str()) {
         return Ok(());
     }
-    registro::escrever(CHAVE, None, "URL:VoxVault")?;
-    registro::escrever(CHAVE, Some("URL Protocol"), "")?;
-    registro::escrever(&format!(r"{CHAVE}\DefaultIcon"), None, &format!("\"{exe}\",0"))?;
-    registro::escrever(&comando_chave, None, &comando)
-}
-
-mod registro {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
-        RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW,
-    };
-
-    fn largo(texto: &str) -> Vec<u16> {
-        texto.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
-    /// A string value of a key under HKEY_CURRENT_USER; `None` for the
-    /// default value.
-    pub fn ler(chave: &str, nome: Option<&str>) -> Option<String> {
-        let chave = largo(chave);
-        let nome = nome.map(largo);
-        let nome_ptr = nome.as_ref().map_or(std::ptr::null(), |n| n.as_ptr());
-        let mut buffer = vec![0u16; 1024];
-        let mut bytes = (buffer.len() * 2) as u32;
-        // SAFETY: both names are NUL-terminated, and the buffer and its size
-        // in bytes agree.
-        let status = unsafe {
-            RegGetValueW(
-                HKEY_CURRENT_USER,
-                chave.as_ptr(),
-                nome_ptr,
-                RRF_RT_REG_SZ,
-                std::ptr::null_mut(),
-                buffer.as_mut_ptr().cast(),
-                &mut bytes,
-            )
-        };
-        if status != ERROR_SUCCESS {
-            return None;
-        }
-        let unidades = (bytes as usize / 2).saturating_sub(1);
-        Some(String::from_utf16_lossy(&buffer[..unidades]))
-    }
-
-    pub fn escrever(chave: &str, nome: Option<&str>, valor: &str) -> Result<(), String> {
-        let chave_larga = largo(chave);
-        let nome = nome.map(largo);
-        let valor_largo = largo(valor);
-        let mut aberta: HKEY = std::ptr::null_mut();
-        // SAFETY: NUL-terminated strings, an out-pointer valid for the call,
-        // and the handle closed on every path after it was opened.
-        unsafe {
-            let status = RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                chave_larga.as_ptr(),
-                0,
-                std::ptr::null(),
-                REG_OPTION_NON_VOLATILE,
-                KEY_SET_VALUE,
-                std::ptr::null(),
-                &mut aberta,
-                std::ptr::null_mut(),
-            );
-            if status != ERROR_SUCCESS {
-                return Err(format!("não foi possível abrir {chave} ({status})"));
-            }
-            let status = RegSetValueExW(
-                aberta,
-                nome.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()),
-                0,
-                REG_SZ,
-                valor_largo.as_ptr().cast(),
-                (valor_largo.len() * 2) as u32,
-            );
-            RegCloseKey(aberta);
-            if status != ERROR_SUCCESS {
-                return Err(format!("não foi possível gravar em {chave} ({status})"));
-            }
-        }
-        Ok(())
-    }
+    let texto = registro::TEXTO;
+    registro::escrever(CHAVE, None, "URL:VoxVault", texto)?;
+    registro::escrever(CHAVE, Some("URL Protocol"), "", texto)?;
+    registro::escrever(&format!(r"{CHAVE}\DefaultIcon"), None, &format!("\"{exe}\",0"), texto)?;
+    registro::escrever(&comando_chave, None, &comando, texto)
 }
 
 #[cfg(test)]
