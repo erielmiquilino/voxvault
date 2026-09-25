@@ -621,6 +621,36 @@ foram corrigidos, com a contagem de palavras igual (984 contra 993). Saiu na
 0.1.3, que instalada aqui refez a reunião com esses três acertos — 180
 trechos, 20 sobreposições, nenhum acima de 10 s.
 
+**A gravação seguinte herdava o título da anterior.** Durante a gravação, o
+campo de título mostra o título dela, que o serviço gera com a hora do início;
+ao encerrar, o estado era zerado menos o título, e uma gravação que começou às
+19:37 ficou chamada "Reunião de 24/09/2026 às 19:31". O título passou a ser
+limpo ao fim da gravação — e só ali, então o que se digita para a próxima, com
+o aplicativo ocioso, fica.
+
+**`voxvault` pelo nome.** Um agente do usuário, trabalhando num terminal, se
+batia para achar a linha de comando: ela só existia em
+`%USERPROFILE%\.voxvault\runtime\ambiente\Scripts`, e a especificação
+proibia mexer no `PATH`, para que o Python do ambiente nunca respondesse por
+`python`. A mudança `add-cli-on-path` refez esse requisito. O preparo copia
+`voxvault.exe` e `voxvault-mcp.exe` para `%USERPROFILE%\.voxvault\bin` — os
+lançadores do uv levam o caminho do interpretador e rodam de qualquer pasta — e
+põe só essa pasta, uma vez, no fim do `PATH` do usuário. O valor é lido e
+gravado pela API do registro, sem expandir variáveis, com o tipo que tinha e no
+tamanho que tiver, e uma leitura que falha por qualquer motivo que não seja a
+ausência do valor interrompe a integração: tomada por vazia, gravaria de volta
+um `PATH` só com a pasta. A desinstalação a tira pelo próprio aplicativo
+(`--remover-do-path`), fora do modo de atualização.
+
+Instalado aqui por cima da 0.1.3, o ensaio acrescentou a pasta ao fim do `PATH`
+com as outras 22 entradas iguais, na mesma ordem, e o tipo mantido. Num terminal
+aberto depois, `voxvault list` respondeu pelo nome no cmd e no Git Bash, e
+`python` continuou sendo o Python 3.14 do usuário, com o `hf` e o `uvicorn` do
+ambiente fora do alcance. O `--remover-do-path` devolveu o `PATH` ao que era —
+menos o `;` vazio do fim — com o aplicativo aberto e a janela intacta, e o
+preparo seguinte pôs a pasta de volta. O desinstalador compilado do ensaio traz
+o comando; o da 0.1.3, não.
+
 ### Em aberto
 
 - **As somas da 0.1.0 saíram com CRLF**, e o `sha256sum -c` do Linux não as
