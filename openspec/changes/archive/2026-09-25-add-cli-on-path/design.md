@@ -35,7 +35,7 @@ O valor é lido sem expandir variáveis (`RRF_NOEXPAND`) e gravado de volta com 
 
 ### 4. Quando
 
-Ao fim de todo preparo bem-sucedido, depois da verificação e do carimbo. Assim a instalação nova e cada atualização renovam as cópias, e uma instalação anterior a esta mudança ganha a pasta na primeira atualização. Uma falha aqui é registrada e não falha o preparo: o `PATH` é conveniência, o ambiente já está pronto. Uma cópia em uso — um `voxvault.exe` rodando da pasta — é renomeada antes de ser substituída.
+Ao fim de todo preparo bem-sucedido, depois da verificação e do carimbo. Assim a instalação nova e cada atualização renovam as cópias, e uma instalação anterior a esta mudança ganha a pasta na primeira atualização. Uma falha aqui é registrada e não falha o preparo: o `PATH` é conveniência, o ambiente já está pronto. Uma cópia igual à nova fica como está: o uv gera o mesmo lançador a cada preparo, e um lançador em execução — um servidor MCP que um agente mantém aberto — segura o próprio arquivo, que até ele sair não pode ser substituído nem renomeado. Uma cópia que não pôde ser renovada não impede a entrada no `PATH`; o próximo preparo tenta de novo.
 
 ### 5. A desinstalação, pelo próprio executável do aplicativo
 

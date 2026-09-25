@@ -27,16 +27,18 @@ pub fn pasta() -> PathBuf {
 }
 
 /// Refresh the copies from the prepared environment's `Scripts` and put the
-/// folder on the PATH if it is not there yet.
+/// folder on the PATH if it is not there yet. A copy that cannot be refreshed
+/// does not keep the folder off the PATH: it is reported, and the next
+/// preparation tries again.
 pub fn integrar(scripts: &Path) -> Result<(), String> {
     let destino = pasta();
     std::fs::create_dir_all(&destino).map_err(|e| format!("{}: {e}", destino.display()))?;
-    for nome in PONTOS_DE_ENTRADA {
-        let origem = scripts.join(nome);
-        if origem.is_file() {
-            copiar(&origem, &destino.join(nome))?;
-        }
-    }
+    let falhas: Vec<String> = PONTOS_DE_ENTRADA
+        .iter()
+        .map(|nome| (scripts.join(nome), destino.join(nome)))
+        .filter(|(origem, _)| origem.is_file())
+        .filter_map(|(origem, copia)| copiar(&origem, &copia).err())
+        .collect();
     let texto = destino.display().to_string();
     let (atual, tipo) = registro::ler(AMBIENTE, Some("Path"))?
         .unwrap_or((String::new(), registro::TEXTO_EXPANSIVEL));
@@ -44,7 +46,11 @@ pub fn integrar(scripts: &Path) -> Result<(), String> {
         registro::escrever(AMBIENTE, Some("Path"), &novo, tipo)?;
         registro::avisar_mudanca_de_ambiente();
     }
-    Ok(())
+    if falhas.is_empty() {
+        Ok(())
+    } else {
+        Err(falhas.join("; "))
+    }
 }
 
 /// Take the folder out of the PATH, wherever it is in it.
@@ -59,18 +65,17 @@ pub fn remover() -> Result<(), String> {
     Ok(())
 }
 
-/// A copy a running `voxvault.exe` cannot block: a launcher in use cannot be
-/// overwritten or deleted, but it can be moved aside -- and the one moved
-/// aside goes at the next preparation, when nothing runs it any more.
+/// One copy, left alone when it already has the same bytes. uv writes the
+/// same launcher at every preparation -- the interpreter's path and the entry
+/// point are all it carries -- and a launcher that is running, like an MCP
+/// server an agent keeps open, holds its own file open: until it exits, the
+/// file can be neither replaced nor moved aside.
 fn copiar(origem: &Path, destino: &Path) -> Result<(), String> {
-    let antigo = destino.with_extension("exe.antigo");
-    let _ = std::fs::remove_file(&antigo);
-    if destino.exists() && std::fs::remove_file(destino).is_err() {
-        let _ = std::fs::rename(destino, &antigo);
+    let novo = std::fs::read(origem).map_err(|e| format!("{}: {e}", origem.display()))?;
+    if std::fs::read(destino).is_ok_and(|atual| atual == novo) {
+        return Ok(());
     }
-    std::fs::copy(origem, destino)
-        .map(|_| ())
-        .map_err(|e| format!("{}: {e}", destino.display()))
+    std::fs::write(destino, &novo).map_err(|e| format!("{}: {e}", destino.display()))
 }
 
 /// Folders compare as Windows compares them: without case, and a trailing
@@ -138,5 +143,37 @@ mod testes {
             Some(r"C:\Tools;%USERPROFILE%\bin;;C:\Outra"),
         );
         assert_eq!(sem_a_pasta(r"C:\Tools;C:\Outra", BIN), None, "mexeu num PATH sem ela");
+    }
+
+    /// Open the way uv's launcher holds itself while it runs: readable by
+    /// others, but not writable, deletable or renamable.
+    fn em_uso(caminho: &Path) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 1;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(caminho)
+            .unwrap()
+    }
+
+    #[test]
+    fn uma_copia_igual_em_uso_fica_e_uma_diferente_e_renovada() {
+        let pasta = std::env::temp_dir().join(format!("voxvault-caminho-{}", std::process::id()));
+        std::fs::create_dir_all(&pasta).unwrap();
+        let (origem, copia) = (pasta.join("origem.exe"), pasta.join("copia.exe"));
+        std::fs::write(&origem, b"lancador").unwrap();
+        std::fs::write(&copia, b"lancador").unwrap();
+
+        let aberta = em_uso(&copia);
+        assert_eq!(copiar(&origem, &copia), Ok(()), "a copia igual, em uso, deu erro");
+        std::fs::write(&origem, b"lancador novo").unwrap();
+        assert!(copiar(&origem, &copia).is_err(), "substituiu um arquivo em uso?");
+        assert_eq!(std::fs::read(&copia).unwrap(), b"lancador", "a copia em uso foi estragada");
+
+        drop(aberta);
+        assert_eq!(copiar(&origem, &copia), Ok(()));
+        assert_eq!(std::fs::read(&copia).unwrap(), b"lancador novo");
+        let _ = std::fs::remove_dir_all(&pasta);
     }
 }

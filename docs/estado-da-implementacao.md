@@ -651,6 +651,15 @@ menos o `;` vazio do fim — com o aplicativo aberto e a janela intacta, e o
 preparo seguinte pôs a pasta de volta. O desinstalador compilado do ensaio traz
 o comando; o da 0.1.3, não.
 
+Com um servidor MCP aberto pela cópia da pasta, porém, o preparo não conseguiu
+renová-la, e a falha dessa cópia pulava a entrada no `PATH`. O lançador do uv
+mantém o próprio arquivo aberto enquanto roda — apagar e renomear dão violação
+de compartilhamento —, então a troca por renomeação que o desenho previa não
+funciona com ele. Como o uv gera o mesmo lançador a cada preparo (os dois só
+diferem em 11 bytes, o ponto de entrada), uma cópia igual passou a ficar como
+está, e uma cópia que não pôde ser renovada não impede mais a entrada no `PATH`:
+é registrada, e o próximo preparo tenta de novo.
+
 ### Em aberto
 
 - **As somas da 0.1.0 saíram com CRLF**, e o `sha256sum -c` do Linux não as

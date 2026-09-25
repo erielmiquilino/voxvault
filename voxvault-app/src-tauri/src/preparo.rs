@@ -930,7 +930,7 @@ pub fn preparar(app: &AppHandle, pasta: Option<String>) -> Result<(), FalhaDoPre
     })?;
     // `voxvault` in the terminal: a convenience, never a reason to fail.
     if let Err(erro) = crate::caminho::integrar(&runtime.join("ambiente").join("Scripts")) {
-        eprintln!("voxvault fora do PATH: {erro}");
+        eprintln!("voxvault pelo nome, no terminal: {erro}");
     }
     avisar(app, "verificacao", "concluida", "");
     Ok(())
