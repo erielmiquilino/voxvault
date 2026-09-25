@@ -658,7 +658,13 @@ de compartilhamento —, então a troca por renomeação que o desenho previa n�
 funciona com ele. Como o uv gera o mesmo lançador a cada preparo (os dois só
 diferem em 11 bytes, o ponto de entrada), uma cópia igual passou a ficar como
 está, e uma cópia que não pôde ser renovada não impede mais a entrada no `PATH`:
-é registrada, e o próximo preparo tenta de novo.
+é registrada, e o próximo preparo tenta de novo. No ensaio anterior à correção,
+com o servidor aberto pela cópia, o preparo terminou sem devolver a pasta ao
+`PATH`; no corrigido, nas mesmas condições, a pasta voltou.
+
+O título e o `PATH` saíram na 0.1.4, que instalada aqui por cima do ensaio
+refez o preparo sozinha em 8 s e responde 0.1.4 no aplicativo, no serviço e no
+MCP, com `voxvault` pelo nome num terminal novo e o resto do `PATH` intacto.
 
 ### Em aberto
 
