@@ -31,7 +31,10 @@ dia inteiro. O VoxVault parte de três decisões:
 ## Recursos
 
 - Gravação em duas trilhas (microfone e sistema), sem perdas (FLAC), com
-  pausa, retomada e avisos quando um dispositivo some ou o microfone fica mudo.
+  pausa, retomada e avisos quando um dispositivo some, o microfone fica mudo ou
+  a trilha do sistema fica em silêncio. Com um headset numa chamada, a trilha do
+  sistema grava a saída de chamada do headset, que é por onde a chamada toca, e
+  uma trilha que perde o dispositivo volta a gravar quando ele reaparece.
 - Transcrição local com `faster-whisper`, na GPU NVIDIA quando houver e na CPU
   quando não houver, com o modelo escolhido pelo hardware.
 - Biblioteca com busca que ignora acentos, linha do tempo por falante e
@@ -95,6 +98,9 @@ Antivírus com proteção de acesso ao microfone, como o Kaspersky, seguram o
 áudio do serviço do VoxVault até você responder ao aviso deles: na primeira
 gravação, procure esse aviso e permita, marcando para lembrar a escolha. Sem
 isso a gravação não começa, e o VoxVault diz que o fluxo de áudio não abriu.
+Numa máquina corporativa a proteção pode só recusar, sem aviso nenhum: aí o
+diagnóstico (`voxvault doctor`) e o erro ao gravar dizem quais executáveis do
+VoxVault a TI precisa liberar.
 
 ## Uso
 
@@ -192,6 +198,11 @@ e a política da sua empresa. A ferramenta não faz esse aviso por você.
 | Configuração, preferências e o serviço em execução | `%USERPROFILE%\.voxvault\` (`config.json`, `aplicativo.json`, `servico.json`, `servico.log`) |
 | Ambiente de execução | `%USERPROFILE%\.voxvault\runtime\` |
 | Gravações, banco e modelos | a pasta de dados, por padrão `%USERPROFILE%\VoxVault` |
+
+O `servico.log` registra, com data e hora, cada gravação, cada troca de
+dispositivo e cada falha, identificando a reunião só pelo seu identificador.
+Passando de 1 MB, ele recomeça na inicialização seguinte do serviço, com o
+anterior guardado em `servico.log.1`.
 
 Quem já usava o VoxVault antes do instalador, com dados em `D:\VoxVault`,
 continua com essa pasta: o diagnóstico mostra a origem "padrão anterior (dados

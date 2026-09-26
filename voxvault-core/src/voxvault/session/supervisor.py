@@ -2,20 +2,29 @@
 
 Plugging in a headset mid-meeting is the most ordinary thing that can happen,
 and it is the case where a recorder either survives or quietly stops capturing
-half the conversation. Two separate failures have to be caught:
+half the conversation. Three separate things have to be caught:
 
 * the device in use **disappears** -- the stream errors, which is easy;
 * the default device for the configured role **changes** while the old one is
-  still perfectly available and the stream reports nothing wrong at all.
+  still perfectly available and the stream reports nothing wrong at all;
+* a **call starts or ends on a headset** whose microphone is being recorded:
+  the call plays through the headset's hands-free output, which need not be
+  the default of any role.
 
-The second is the one that needs watching, and polling catches both. Detection
-is bounded at five seconds and recovery at thirty; they are different budgets
-and the metadata records their sum as one gap, because that is what the person
-listening actually lost.
+Polling catches all three. Detection is bounded at five seconds and recovery
+at thirty; they are different budgets and the metadata records their sum as
+one gap, because that is what the person listening actually lost.
 
-A track that cannot be recovered ends as incomplete. It never ends the
-recording: the other track keeps going, and the session finishes when the
-person says so.
+A track that is still without a device after thirty seconds is marked
+incomplete and the person is told -- but it is not given up on. Found on a
+real meeting: a Bluetooth headset dropped, Bluetooth was restarted, and the
+headset came back after the budget; both tracks had been ended and the rest
+of the meeting was lost. Tries continue for as long as the recording lasts,
+each in a thread of its own, so a device that hangs while opening -- a
+headset halfway through reconnecting -- delays nobody else's detection.
+
+Nothing here ever ends the recording: the session finishes when the person
+says so.
 """
 
 from __future__ import annotations
@@ -32,11 +41,18 @@ from ..config import POLICY_PINNED
 CHECK_INTERVAL_S = 2.0
 #: Detection budget from the specification.
 DETECTION_BUDGET_S = 5.0
-#: Recovery budget, counted from the moment the change was detected.
+#: Recovery budget, counted from the moment the change was detected. Past it
+#: the track is marked incomplete, and still retried.
 RECOVERY_BUDGET_S = 30.0
+#: How often a track still without a device retries once the budget is spent.
+RETRY_INTERVAL_S = 5.0
 #: A microphone that has delivered no packet for this long is treated as lost.
 #: Inside the detection budget, with room for one missed poll.
 STALL_S = 4.0
+#: How long a check waits for an attempt before moving on. A device that opens
+#: at once recovers inside the same check; one that hangs keeps only its own
+#: thread busy.
+ATTEMPT_WAIT_S = 0.5
 
 
 class TrackHealth(StrEnum):
@@ -67,6 +83,41 @@ class DeviceGap:
         }
 
 
+class _Attempt:
+    """One try at reopening a track, in a thread of its own."""
+
+    def __init__(self, open_track) -> None:
+        self.done = threading.Event()
+        self.endpoint = None
+        self.stream = None
+        self.error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run, args=(open_track,), name="voxvault-reabertura",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self, open_track) -> None:
+        try:
+            self.endpoint, self.stream = open_track()
+        except BaseException as exc:
+            self.error = exc
+        finally:
+            self.done.set()
+
+    def discard(self) -> None:
+        """Close whatever this attempt opened, now or when it finishes."""
+        def close() -> None:
+            self.done.wait()
+            if self.stream is not None:
+                try:
+                    self.stream.stop()
+                except Exception:
+                    pass
+
+        threading.Thread(target=close, name="voxvault-descarte", daemon=True).start()
+
+
 @dataclass(slots=True)
 class TrackWatch:
     """Everything the supervisor needs to know about one track."""
@@ -87,6 +138,15 @@ class TrackWatch:
     #: the microphone, which delivers continuously while it is alive.
     last_packets: int = -1
     progressed_at: float = 0.0
+    #: Set once the recovery budget runs out. The track keeps being retried
+    #: and may come back, but its hole is longer than the budget allowed.
+    incomplete: bool = False
+    #: Whether the track records a headset's call output right now.
+    on_call_output: bool = False
+    to_device: str = ""
+    last_error: str = ""
+    attempt: _Attempt | None = None
+    next_attempt_at: float = 0.0
 
     @property
     def follows_default(self) -> bool:
@@ -98,6 +158,12 @@ class TrackWatch:
 
         return self.flow == FLOW_CAPTURE
 
+    @property
+    def is_system(self) -> bool:
+        from ..capture.devices import FLOW_RENDER
+
+        return self.flow == FLOW_RENDER
+
 
 class DeviceSupervisor:
     """Watches both tracks and migrates or reopens them as needed."""
@@ -108,10 +174,14 @@ class DeviceSupervisor:
         *,
         interval_s: float = CHECK_INTERVAL_S,
         recovery_budget_s: float = RECOVERY_BUDGET_S,
+        retry_interval_s: float = RETRY_INTERVAL_S,
+        attempt_wait_s: float = ATTEMPT_WAIT_S,
     ) -> None:
         self.session = session
         self.interval_s = interval_s
         self.recovery_budget_s = recovery_budget_s
+        self.retry_interval_s = retry_interval_s
+        self.attempt_wait_s = attempt_wait_s
         self.watches: dict[str, TrackWatch] = {}
         self._halt = threading.Event()
         self._thread: threading.Thread | None = None
@@ -135,24 +205,35 @@ class DeviceSupervisor:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=3.0)
+        for watch in self.watches.values():
+            if watch.attempt is not None:
+                # Whatever an attempt still in flight opens, nobody records.
+                watch.attempt.discard()
+                watch.attempt = None
+            if watch.health is TrackHealth.RECOVERING:
+                elapsed = time.monotonic() - watch.recovering_since
+                watch.gaps.append(DeviceGap(
+                    track=watch.track,
+                    started_ms=watch.detected_at_ms,
+                    duration_ms=int((elapsed + self.interval_s) * 1000),
+                    reason=f"{watch.reason}; nao recuperada ate o fim da gravacao"
+                           + (f" ({watch.last_error})" if watch.last_error else ""),
+                    from_device=watch.endpoint_name,
+                ))
 
     def _run(self) -> None:
         while not self._halt.wait(self.interval_s):
             try:
                 self.check()
             except Exception as exc:  # a supervisor must not kill a recording
-                self.session._warnings.append(
-                    f"supervisao de dispositivos falhou: {exc}"
-                )
+                self.session._warn(f"supervisao de dispositivos falhou: {exc}")
 
     # -- the check -----------------------------------------------------
 
     def check(self) -> None:
         for watch in list(self.watches.values()):
-            if watch.health is TrackHealth.INCOMPLETE:
-                continue
             if watch.health is TrackHealth.RECOVERING:
-                self._try_recover(watch)
+                self._continue_recovery(watch)
                 continue
             self._check_healthy(watch)
 
@@ -182,15 +263,22 @@ class DeviceSupervisor:
         if not watch.follows_default:
             return  # a pinned track never migrates, by policy
 
-        target = self._current_default(watch)
+        target = self._target(watch)
         if target is not None and target.id != watch.endpoint_id:
             # The old device may still be perfectly available and the stream
-            # perfectly healthy. Following the role means following it anyway.
-            self._begin_recovery(
-                watch,
-                f"o padrao de {watch.role} passou a ser '{target.name}'",
-                to_device=target.name,
+            # perfectly healthy. Following the role -- or the call -- means
+            # following it anyway.
+            self._begin_recovery(watch, self._why(watch, target), to_device=target.name)
+
+    def _why(self, watch: TrackWatch, target) -> str:
+        if watch.is_system and getattr(target, "is_call_endpoint", False):
+            return f"a chamada passou a tocar em '{target.name}'"
+        if watch.is_system and watch.on_call_output:
+            return (
+                f"a saida de chamada '{watch.endpoint_name}' deixou de estar "
+                f"ativa; o padrao de {watch.role} e '{target.name}'"
             )
+        return f"o padrao de {watch.role} passou a ser '{target.name}'"
 
     def _stalled(self, watch: TrackWatch, stream) -> bool:
         """True when a capture stream has delivered nothing for too long."""
@@ -204,58 +292,111 @@ class DeviceSupervisor:
             return False
         return now - watch.progressed_at >= STALL_S
 
-    def _current_default(self, watch: TrackWatch):
-        from ..capture.devices import default_endpoint
+    def _microphone_id(self) -> str:
+        from ..capture.devices import FLOW_CAPTURE
 
+        for other in self.watches.values():
+            if other.flow == FLOW_CAPTURE:
+                return other.endpoint_id
+        return ""
+
+    def _target(self, watch: TrackWatch):
+        """Where a track that follows the default should be recording now."""
         try:
-            return default_endpoint(watch.flow, watch.role)
+            return self._resolve(watch)
         except Exception:
             return None
+
+    def _resolve(self, watch: TrackWatch):
+        from ..capture import devices
+
+        if not watch.follows_default:
+            return devices.resolve_endpoint(
+                flow=watch.flow, policy_pinned_id=watch.pinned_id, role=watch.role
+            )
+        if watch.is_system:
+            return devices.system_track_endpoint(
+                role=watch.role, microphone_id=self._microphone_id()
+            )
+        return devices.resolve_endpoint(flow=watch.flow, role=watch.role)
+
+    # -- recovery ------------------------------------------------------
 
     def _begin_recovery(self, watch: TrackWatch, reason: str, to_device: str = "") -> None:
         watch.health = TrackHealth.RECOVERING
         watch.recovering_since = time.monotonic()
         watch.reason = reason
+        watch.to_device = to_device
+        watch.last_error = ""
+        watch.next_attempt_at = 0.0
         writer = self.session.writer_for(watch.track)
         watch.detected_at_ms = writer.timeline_ms if writer is not None else 0
-        self.session._warnings.append(
-            f"trilha '{watch.track}': {reason}; recuperando por ate "
-            f"{self.recovery_budget_s:.0f}s"
-        )
+        self.session._warn(f"trilha '{watch.track}': {reason}; recuperando")
         # Try immediately: a headset that is already present recovers on the
         # first attempt, and waiting a whole interval would widen the gap for
         # no reason.
-        self._try_recover(watch, to_device=to_device)
+        self._continue_recovery(watch)
 
-    def _try_recover(self, watch: TrackWatch, to_device: str = "") -> None:
-        from ..capture.devices import FLOW_RENDER, resolve_endpoint
+    def _continue_recovery(self, watch: TrackWatch) -> None:
+        if watch.attempt is None:
+            if time.monotonic() < watch.next_attempt_at:
+                return
+            watch.attempt = _Attempt(lambda: self._open(watch))
+        attempt = watch.attempt
+        if not attempt.done.wait(self.attempt_wait_s):
+            self._mark_incomplete_when_due(watch)
+            return  # still opening; its own thread, nobody else waits
+
+        watch.attempt = None
+        if attempt.error is not None or attempt.stream is None:
+            watch.last_error = str(attempt.error)
+            self._mark_incomplete_when_due(watch)
+            elapsed = time.monotonic() - watch.recovering_since
+            if elapsed >= self.recovery_budget_s:
+                watch.next_attempt_at = time.monotonic() + self.retry_interval_s
+            return
+        self._hand_over(watch, attempt.endpoint, attempt.stream)
+
+    def _open(self, watch: TrackWatch):
+        """Resolve where the track records and open it. Runs in the attempt's thread."""
+        from ..capture.devices import FLOW_RENDER
         from ..capture.stream import CaptureStream
 
-        elapsed = time.monotonic() - watch.recovering_since
-        try:
-            endpoint = resolve_endpoint(
-                flow=watch.flow,
-                policy_pinned_id=watch.pinned_id if not watch.follows_default else "",
-                role=watch.role,
-            )
-            stream = CaptureStream(
-                endpoint.id, loopback=(watch.flow == FLOW_RENDER), name=watch.track
-            )
-            stream.start()
-        except Exception as exc:
-            if elapsed >= self.recovery_budget_s:
-                self._give_up(watch, str(exc))
-            return
+        endpoint = self._resolve(watch)
+        stream = CaptureStream(
+            endpoint.id, loopback=(watch.flow == FLOW_RENDER), name=watch.track
+        )
+        stream.start()
+        if self._halt.is_set():
+            stream.stop()
+            raise RuntimeError("a gravacao terminou durante a reabertura")
+        return endpoint, stream
 
-        writer = self.session.writer_for(watch.track)
-        started_ms = watch.detected_at_ms
-        if writer is not None:
-            writer.rebind(stream.format)
+    def _mark_incomplete_when_due(self, watch: TrackWatch) -> None:
+        if watch.incomplete:
+            return
+        if time.monotonic() - watch.recovering_since < self.recovery_budget_s:
+            return
+        watch.incomplete = True
+        detail = f" ({watch.last_error})" if watch.last_error else ""
+        self.session._warn(
+            f"trilha '{watch.track}' marcada como incompleta: {watch.reason}; "
+            f"sem dispositivo ha {self.recovery_budget_s:.0f}s{detail}. "
+            f"As tentativas continuam enquanto a gravacao durar."
+        )
+
+    def _hand_over(self, watch: TrackWatch, endpoint, stream) -> None:
+        elapsed = time.monotonic() - watch.recovering_since
+        # The session moves the writer to the new device's format on the
+        # writer's own thread, after what the old device still held.
         self.session.replace_stream(watch.track, stream)
 
         previous_name = watch.endpoint_name
         watch.endpoint_id = endpoint.id
         watch.endpoint_name = endpoint.name
+        watch.on_call_output = watch.is_system and bool(
+            getattr(endpoint, "is_call_endpoint", False)
+        )
         watch.health = TrackHealth.RECORDING
         # A fresh stream gets a fair window before it can be judged stalled;
         # its packet count starts over and has nothing to do with the old one.
@@ -263,34 +404,17 @@ class DeviceSupervisor:
         watch.progressed_at = time.monotonic()
         watch.gaps.append(DeviceGap(
             track=watch.track,
-            started_ms=started_ms,
+            started_ms=watch.detected_at_ms,
             # Detection and recovery are different budgets; what the listener
             # lost is their sum, recorded as one gap.
             duration_ms=int((elapsed + self.interval_s) * 1000),
             reason=watch.reason,
             from_device=previous_name,
-            to_device=to_device or endpoint.name,
+            to_device=watch.to_device or endpoint.name,
         ))
-        self.session._warnings.append(
+        self.session._warn(
             f"trilha '{watch.track}': gravando agora em '{endpoint.name}'"
         )
-
-    def _give_up(self, watch: TrackWatch, detail: str) -> None:
-        """End one track. Never the recording."""
-        watch.health = TrackHealth.INCOMPLETE
-        watch.gaps.append(DeviceGap(
-            track=watch.track,
-            started_ms=watch.detected_at_ms,
-            duration_ms=0,
-            reason=f"{watch.reason}; nao recuperada em "
-                   f"{self.recovery_budget_s:.0f}s ({detail})",
-            from_device=watch.endpoint_name,
-        ))
-        self.session._warnings.append(
-            f"trilha '{watch.track}' encerrada como incompleta: {watch.reason}. "
-            f"A gravacao continua na outra trilha."
-        )
-        self.session.end_track(watch.track)
 
     # -- reporting -----------------------------------------------------
 
@@ -302,4 +426,11 @@ class DeviceSupervisor:
         ]
 
     def health(self) -> dict[str, str]:
-        return {track: str(w.health) for track, w in self.watches.items()}
+        return {
+            track: str(TrackHealth.INCOMPLETE if w.incomplete else w.health)
+            for track, w in self.watches.items()
+        }
+
+    def device_names(self) -> dict[str, str]:
+        """What each track records from right now, by name."""
+        return {track: w.endpoint_name for track, w in self.watches.items()}

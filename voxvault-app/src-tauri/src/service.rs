@@ -22,7 +22,7 @@
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -556,6 +556,25 @@ pub fn log_path() -> PathBuf {
     paths::user_config_dir().join("servico.log")
 }
 
+/// Past this size the log starts over at the next start of the service, the
+/// old one kept beside it. The service only ever appends -- now a dated line
+/// for every device change of every recording -- and a log too big to open
+/// is no log at all.
+const LOG_MAXIMO: u64 = 1024 * 1024;
+
+/// Move a log past `maximo` bytes to `<name>.1`, replacing the previous one.
+/// Best effort: a log some process still holds is simply left as it is.
+fn rotacionar_log(log: &Path, maximo: u64) {
+    let grande = std::fs::metadata(log).map(|m| m.len() > maximo).unwrap_or(false);
+    if grande {
+        let mut anterior = log.as_os_str().to_owned();
+        anterior.push(".1");
+        let anterior = PathBuf::from(anterior);
+        let _ = std::fs::remove_file(&anterior);
+        let _ = std::fs::rename(log, &anterior);
+    }
+}
+
 /// Start the resident service, independent of this window.
 ///
 /// Independent on purpose: a service tied to this window would be torn down
@@ -576,6 +595,7 @@ fn spawn_service() -> Result<(), String> {
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    rotacionar_log(&log, LOG_MAXIMO);
     let sink = || {
         OpenOptions::new()
             .create(true)
@@ -647,6 +667,25 @@ fn tail_of_log() -> String {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn um_log_grande_comeca_de_novo_e_o_anterior_fica_ao_lado() {
+        let pasta = std::env::temp_dir().join(format!("voxvault-log-{}", std::process::id()));
+        std::fs::create_dir_all(&pasta).unwrap();
+        let log = pasta.join("servico.log");
+        let anterior = pasta.join("servico.log.1");
+        std::fs::write(&anterior, b"o de antes do anterior").unwrap();
+
+        std::fs::write(&log, b"curto").unwrap();
+        rotacionar_log(&log, 16);
+        assert_eq!(std::fs::read(&log).unwrap(), b"curto", "um log pequeno fica");
+
+        std::fs::write(&log, vec![b'x'; 64]).unwrap();
+        rotacionar_log(&log, 16);
+        assert!(!log.exists(), "o servico comeca um log novo");
+        assert_eq!(std::fs::read(&anterior).unwrap().len(), 64, "o anterior fica ao lado");
+        let _ = std::fs::remove_dir_all(&pasta);
+    }
 
     #[test]
     fn encerrar_espera_a_compressao_e_consultas_nao() {

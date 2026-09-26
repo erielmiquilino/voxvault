@@ -155,6 +155,7 @@ WAVE_FORMAT_EXTENSIBLE: Final = 0xFFFE
 VT_EMPTY: Final = 0
 VT_UI4: Final = 19
 VT_LPWSTR: Final = 31
+VT_CLSID: Final = 72
 
 INFINITE: Final = 0xFFFFFFFF
 WAIT_OBJECT_0: Final = 0x00000000
@@ -292,6 +293,11 @@ PKEY_AudioEndpoint_FormFactor: Final = PROPERTYKEY(
 )
 PKEY_AudioEndpoint_GUID: Final = PROPERTYKEY(
     _guid("{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E}"), 4
+)
+#: The physical device an endpoint belongs to. A Bluetooth headset's stereo
+#: output, hands-free output and hands-free microphone all share it.
+PKEY_Device_ContainerId: Final = PROPERTYKEY(
+    _guid("{8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C}"), 2
 )
 
 #: EndpointFormFactor, used by the echo-risk heuristic further up the stack.
@@ -439,6 +445,19 @@ class IPropertyStore(ComPtr):
         try:
             if pv.vt == VT_UI4:
                 return int(pv.value.ulVal)
+            return default
+        finally:
+            _ole32.PropVariantClear(byref(pv))
+
+    def get_guid(self, key: PROPERTYKEY, default: str = "") -> str:
+        """A ``VT_CLSID`` property in its canonical spelling."""
+        pv = PROPVARIANT()
+        hr = self._GetValue(self.this, byref(key), byref(pv))
+        if hr < 0:
+            return default
+        try:
+            if pv.vt == VT_CLSID and pv.value.pwszVal:
+                return guid_to_str(ctypes.cast(pv.value.pwszVal, POINTER(GUID))[0])
             return default
         finally:
             _ole32.PropVariantClear(byref(pv))

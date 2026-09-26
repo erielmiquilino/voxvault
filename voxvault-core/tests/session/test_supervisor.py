@@ -14,6 +14,7 @@ instead of by luck.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -33,20 +34,25 @@ FORMAT = StreamFormat(
 
 
 class FakeEndpoint:
-    def __init__(self, identifier: str, name: str) -> None:
+    def __init__(self, identifier: str, name: str, *, call: bool = False) -> None:
         self.id = identifier
         self.name = name
+        self.is_call_endpoint = call
 
 
 class FakeStream:
-    def __init__(self, endpoint_id: str = "dev-1", *, broken: bool = False) -> None:
+    def __init__(self, endpoint_id: str = "dev-1", *, broken: bool = False,
+                 hang: threading.Event | None = None) -> None:
         self.endpoint_id = endpoint_id
         self.format = FORMAT
         self.error = RuntimeError("dispositivo sumiu") if broken else None
         self.running = not broken
         self.stopped = False
+        self._hang = hang
 
     def start(self) -> int:
+        if self._hang is not None:
+            self._hang.wait(10)  # a device halfway through reconnecting
         return 0
 
     def stop(self) -> None:
@@ -88,6 +94,9 @@ class FakeSession:
         self.ended.append(track)
         self._streams.pop(track, None)
 
+    def _warn(self, message):
+        self._warnings.append(message)
+
 
 def _watch(policy: str = POLICY_FOLLOW_DEFAULT, **kwargs) -> TrackWatch:
     defaults = dict(
@@ -108,6 +117,10 @@ def setup(monkeypatch):
         "default_entrada": FakeEndpoint("mic-1", "Microfone"),
         "open_fails": 0,
         "opened": [],
+        # The call output of the headset whose microphone is recorded, while
+        # a call is on; and the endpoints whose opening hangs.
+        "call_output": None,
+        "hang": {},
     }
 
     def _default_for(flow):
@@ -124,8 +137,13 @@ def setup(monkeypatch):
             return FakeEndpoint(policy_pinned_id, "Fixado")
         return _default_for(flow)
 
+    def fake_system_target(*, role, microphone_id=""):
+        if state["call_output"] is not None and microphone_id:
+            return state["call_output"]
+        return fake_resolve(flow="saida", role=role)
+
     def fake_stream(endpoint_id, *, loopback=False, name=""):
-        stream = FakeStream(endpoint_id)
+        stream = FakeStream(endpoint_id, hang=state["hang"].get(endpoint_id))
         state["opened"].append(endpoint_id)
         return stream
 
@@ -134,6 +152,7 @@ def setup(monkeypatch):
 
     monkeypatch.setattr(devices_module, "default_endpoint", fake_default)
     monkeypatch.setattr(devices_module, "resolve_endpoint", fake_resolve)
+    monkeypatch.setattr(devices_module, "system_track_endpoint", fake_system_target)
     monkeypatch.setattr(stream_module, "CaptureStream", fake_stream)
     return state
 
@@ -168,7 +187,9 @@ def test_a_changed_default_migrates_even_though_nothing_errored(setup) -> None:
     assert watch.health is TrackHealth.RECORDING
     assert watch.endpoint_id == "dev-2"
     assert session._streams["system"].endpoint_id == "dev-2"
-    assert session._writers["system"].rebound_to is FORMAT
+    assert session._writers["system"].rebound_to is None, (
+        "quem troca o formato do escritor e a sessao, na thread de escrita"
+    )
 
 
 def test_a_lost_device_starts_recovery(setup) -> None:
@@ -225,7 +246,7 @@ def test_recovery_keeps_trying_inside_the_budget(setup) -> None:
     assert session.ended == [], "a trilha voltou, entao nada foi encerrado"
 
 
-def test_a_track_that_never_comes_back_ends_as_incomplete(setup) -> None:
+def test_a_track_without_a_device_past_the_budget_is_marked_and_kept(setup) -> None:
     session = FakeSession(
         {"system": FakeStream("dev-1", broken=True), "mic": FakeStream("mic-1")}
     )
@@ -236,24 +257,112 @@ def test_a_track_that_never_comes_back_ends_as_incomplete(setup) -> None:
     setup["open_fails"] = 99
     supervisor.check()
 
-    assert supervisor.watches["system"].health is TrackHealth.INCOMPLETE
-    assert session.ended == ["system"]
+    assert supervisor.health()["system"] == "incompleta"
+    assert supervisor.watches["system"].health is TrackHealth.RECOVERING
+    assert session.ended == [], "a trilha nao e encerrada: continua sendo tentada"
+    assert any("incompleta" in w and "continuam" in w for w in session._warnings)
     # The whole point: the other track carries on and the recording lives.
     assert "mic" in session._streams
     assert supervisor.watches["mic"].health is TrackHealth.RECORDING
 
 
-def test_an_incomplete_track_is_not_checked_again(setup) -> None:
-    session = FakeSession({"system": FakeStream("dev-1", broken=True)})
-    supervisor = DeviceSupervisor(session, recovery_budget_s=0.0)
+def test_a_headset_that_comes_back_after_the_budget_is_recorded_again(setup) -> None:
+    """Scenario: Headset que volta depois do prazo -- the evening of 25/09."""
+    session = FakeSession({"mic": FakeStream("mic-1", broken=True)})
+    supervisor = DeviceSupervisor(session, recovery_budget_s=0.0, retry_interval_s=0.0)
+    supervisor.watch(_watch(track="mic", flow="entrada", endpoint_id="mic-1",
+                            endpoint_name="JBL Hands-Free"))
+
+    setup["open_fails"] = 3
+    for _ in range(3):
+        supervisor.check()
+        assert supervisor.watches["mic"].health is TrackHealth.RECOVERING
+
+    supervisor.check()  # Bluetooth restarted, the headset is back
+
+    watch = supervisor.watches["mic"]
+    assert watch.health is TrackHealth.RECORDING
+    assert session._streams["mic"].endpoint_id == "mic-1"
+    assert supervisor.health()["mic"] == "incompleta", "o buraco passou do prazo"
+    assert len(supervisor.gaps()) == 1, "da perda a volta, uma unica lacuna"
+
+
+def test_a_hanging_open_does_not_hold_up_the_other_track(setup) -> None:
+    """Scenario: Abertura que demora numa trilha."""
+    hang = threading.Event()
+    setup["hang"]["dev-1"] = hang
+    session = FakeSession({
+        "system": FakeStream("dev-1", broken=True),
+        "mic": FakeStream("mic-1", broken=True),
+    })
+    supervisor = DeviceSupervisor(session, attempt_wait_s=0.1)
     supervisor.watch(_watch())
-    setup["open_fails"] = 99
+    supervisor.watch(_watch(track="mic", flow="entrada", endpoint_id="mic-1"))
+
+    began = time.monotonic()
+    try:
+        supervisor.check()
+        took = time.monotonic() - began
+
+        assert took < 1.0, f"a verificacao esperou a abertura travada ({took:.1f}s)"
+        assert supervisor.watches["system"].health is TrackHealth.RECOVERING
+        assert supervisor.watches["mic"].health is TrackHealth.RECORDING
+    finally:
+        hang.set()
+        supervisor.stop()
+
+
+# -- the call output of a headset -------------------------------------
+
+def test_the_system_track_moves_to_the_call_output_when_a_call_starts(setup) -> None:
+    """Scenario: Chamada que comeca depois da gravacao."""
+    session = FakeSession({"system": FakeStream("dev-1"), "mic": FakeStream("mic-hf")})
+    supervisor = DeviceSupervisor(session)
+    supervisor.watch(_watch(endpoint_name="Fones de ouvido (JBL)"))
+    supervisor.watch(_watch(track="mic", flow="entrada", endpoint_id="mic-hf"))
+
+    setup["default_entrada"] = FakeEndpoint("mic-hf", "Microfone (JBL Hands-Free)")
+    setup["call_output"] = FakeEndpoint(
+        "hf-out", "Alto-falantes (JBL Hands-Free)", call=True
+    )
+    supervisor.check()
+
+    watch = supervisor.watches["system"]
+    assert watch.endpoint_id == "hf-out"
+    assert watch.on_call_output
+    assert "chamada" in supervisor.gaps()[0]["motivo"]
+
+
+def test_the_system_track_returns_to_the_default_when_the_call_ends(setup) -> None:
+    session = FakeSession({"system": FakeStream("dev-1"), "mic": FakeStream("mic-hf")})
+    supervisor = DeviceSupervisor(session)
+    supervisor.watch(_watch(endpoint_name="Fones de ouvido (JBL)"))
+    supervisor.watch(_watch(track="mic", flow="entrada", endpoint_id="mic-hf"))
+    setup["default_entrada"] = FakeEndpoint("mic-hf", "Microfone (JBL Hands-Free)")
+    setup["call_output"] = FakeEndpoint(
+        "hf-out", "Alto-falantes (JBL Hands-Free)", call=True
+    )
+    supervisor.check()
+
+    setup["call_output"] = None  # the call ended
+    supervisor.check()
+
+    watch = supervisor.watches["system"]
+    assert watch.endpoint_id == "dev-1"
+    assert not watch.on_call_output
+    assert "deixou de estar ativa" in supervisor.gaps()[-1]["motivo"]
+
+
+def test_a_pinned_system_track_ignores_the_call_output(setup) -> None:
+    session = FakeSession({"system": FakeStream("dev-1"), "mic": FakeStream("mic-hf")})
+    supervisor = DeviceSupervisor(session)
+    supervisor.watch(_watch(policy=POLICY_PINNED))
+    supervisor.watch(_watch(track="mic", flow="entrada", endpoint_id="mic-hf"))
+    setup["call_output"] = FakeEndpoint("hf-out", "Alto-falantes (Hands-Free)", call=True)
 
     supervisor.check()
-    setup["opened"].clear()
-    supervisor.check()
 
-    assert setup["opened"] == [], "uma trilha encerrada nao volta a ser tentada"
+    assert supervisor.watches["system"].endpoint_id == "dev-1"
 
 
 # -- what the metadata records ----------------------------------------
@@ -278,16 +387,18 @@ def test_a_migration_is_recorded_as_one_gap(setup) -> None:
     assert "padrao" in gap["motivo"]
 
 
-def test_giving_up_is_recorded_with_its_reason(setup) -> None:
+def test_a_track_never_recovered_is_recorded_as_one_gap_to_the_end(setup) -> None:
     session = FakeSession({"system": FakeStream("dev-1", broken=True)})
     supervisor = DeviceSupervisor(session, recovery_budget_s=0.0)
     supervisor.watch(_watch())
     setup["open_fails"] = 99
 
     supervisor.check()
+    supervisor.stop()  # the person ends the recording
 
-    gap = supervisor.gaps()[0]
-    assert "nao recuperada" in gap["motivo"]
+    gaps = supervisor.gaps()
+    assert len(gaps) == 1
+    assert "nao recuperada ate o fim" in gaps[0]["motivo"]
     assert supervisor.health()["system"] == "incompleta"
 
 

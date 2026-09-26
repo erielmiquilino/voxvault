@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..capture.anchor import TrackPlacer, residual_ns
@@ -40,10 +40,19 @@ class TrackStats:
     flushes: int = 0
     last_flush_monotonic: float = 0.0
     write_error: str = ""
+    #: Packets that could not be written, their total length, and the first
+    #: few of them as (timeline position, length) in milliseconds.
+    unwritten_blocks: int = 0
+    unwritten_ms: float = 0.0
+    unwritten_at: list = field(default_factory=list)
+    unwritten_reason: str = ""
 
     @property
     def duration_ms(self) -> int:
         return int(self.frames_written * 1000 / TARGET_RATE)
+
+#: How many unwritten blocks are listed one by one; past it, only counted.
+UNWRITTEN_LISTED = 20
 
 
 @dataclass(slots=True)
@@ -294,20 +303,40 @@ class TrackWriter:
         if placement.write_frames > 0:
             offset = placement.trim_frames * self.source_format.block_align
             raw = packet.data[offset:]
-            if packet.silent:
-                # The OS says the buffer is silence and its contents are
-                # undefined, so the silence is synthesised -- in the device's
-                # frames and through the same conversion as any audio. Written
-                # straight at the target rate, a 48 kHz packet took three times
-                # its length, and everything after it landed late in the file
-                # while the timeline said otherwise.
-                zeros = bytes(placement.write_frames * self.source_format.block_align)
-                payload += self._to_target(zeros, placement.write_frames).tobytes()
-            else:
-                payload += self._to_target(raw, placement.write_frames).tobytes()
+            try:
+                if packet.silent:
+                    # The OS says the buffer is silence and its contents are
+                    # undefined, so the silence is synthesised -- in the
+                    # device's frames and through the same conversion as any
+                    # audio. Written straight at the target rate, a 48 kHz
+                    # packet took three times its length, and everything after
+                    # it landed late in the file while the timeline said
+                    # otherwise.
+                    zeros = bytes(placement.write_frames * self.source_format.block_align)
+                    payload += self._to_target(zeros, placement.write_frames).tobytes()
+                else:
+                    payload += self._to_target(raw, placement.write_frames).tobytes()
+            except Exception as exc:
+                # A packet that cannot be read in this track's format. Its
+                # place on the timeline is kept, with silence, so what comes
+                # after lands where it belongs; and it is counted, never
+                # dropped quietly.
+                payload += self._silence(placement.write_frames)
+                self.count_unwritten(placement.write_frames, str(exc))
 
         if payload:
             self._append(payload)
+
+    def count_unwritten(self, source_frames: int, reason: str = "") -> None:
+        """Record a stretch of the source that could not be written."""
+        length_ms = source_frames * 1000 / self.source_format.sample_rate
+        self.stats.unwritten_blocks += 1
+        self.stats.unwritten_reason = reason or self.stats.unwritten_reason
+        self.stats.unwritten_ms += length_ms
+        if len(self.stats.unwritten_at) < UNWRITTEN_LISTED:
+            self.stats.unwritten_at.append(
+                {"instante_ms": self.timeline_ms, "duracao_ms": round(length_ms, 1)}
+            )
 
     def write_silence_ms(self, milliseconds: int) -> None:
         """Fill a stretch with silence -- used for a pause interval."""

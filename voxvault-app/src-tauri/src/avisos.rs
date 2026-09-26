@@ -47,6 +47,11 @@ const AUMID_DO_POWERSHELL: &str =
     r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe";
 /// Microphone silence that becomes a warning.
 const SILENCIO_S: f64 = 60.0;
+/// System-track silence that becomes a warning. Longer than the
+/// microphone's: nobody else talking for a while is ordinary, but two minutes
+/// of nothing at all is how a call playing on another output looked -- a
+/// Teams call on a Bluetooth headset, recorded without the other side.
+const SILENCIO_DO_SISTEMA_S: f64 = 120.0;
 /// How long a "meeting detected" suggestion stays a suggestion. After that,
 /// acting on the notification opens the window instead of recording.
 pub const VALIDADE_DA_SUGESTAO: Duration = Duration::from_secs(120);
@@ -199,6 +204,8 @@ pub struct Observador {
     avisos_vistos: (String, usize),
     silencio_em_episodio: bool,
     silencios: u32,
+    silencio_do_sistema_em_episodio: bool,
+    silencios_do_sistema: u32,
     deteccao_em_episodio: Option<String>,
     deteccoes: u32,
     cursor: Option<Cursor>,
@@ -229,7 +236,9 @@ impl Observador {
                 self.gravacao = Some((g.uid.clone(), g.titulo.clone()));
                 self.gravacao_duracao_ms = g.duracao_ms;
                 self.avisos_vistos = (g.uid.clone(), avisos_de(snapshot).len());
-                self.silencio_em_episodio = silencio_do_microfone(snapshot) >= SILENCIO_S;
+                self.silencio_em_episodio = silencio_de(snapshot, "mic") >= SILENCIO_S;
+                self.silencio_do_sistema_em_episodio =
+                    silencio_de(snapshot, "system") >= SILENCIO_DO_SISTEMA_S;
             }
             self.deteccao_em_episodio = deteccao_de(snapshot);
             return saida;
@@ -294,7 +303,7 @@ impl Observador {
 
             // A paused recording captures nothing, so its silence says nothing.
             if estado == EstadoDaBandeja::Gravando {
-                let mudo = silencio_do_microfone(snapshot) >= SILENCIO_S;
+                let mudo = silencio_de(snapshot, "mic") >= SILENCIO_S;
                 if mudo && !self.silencio_em_episodio {
                     self.silencios += 1;
                     self.novo(
@@ -311,9 +320,26 @@ impl Observador {
                     );
                 }
                 self.silencio_em_episodio = mudo;
+
+                let sistema_mudo = silencio_de(snapshot, "system") >= SILENCIO_DO_SISTEMA_S;
+                if sistema_mudo && !self.silencio_do_sistema_em_episodio {
+                    self.silencios_do_sistema += 1;
+                    self.novo(
+                        Aviso::de(
+                            Categoria::AvisosDeCaptura,
+                            format!("silencio-sistema:{}:{}", g.uid, self.silencios_do_sistema),
+                            "Aviso de captura",
+                            silencio_do_sistema(dispositivo_de(snapshot, "system").as_deref()),
+                            Destino::Gravacao,
+                        ),
+                        &mut saida,
+                    );
+                }
+                self.silencio_do_sistema_em_episodio = sistema_mudo;
             }
         } else if !gravando {
             self.silencio_em_episodio = false;
+            self.silencio_do_sistema_em_episodio = false;
         }
 
         // -- meeting detected ----------------------------------------------
@@ -458,13 +484,34 @@ fn avisos_de(snapshot: &Snapshot) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn silencio_do_microfone(snapshot: &Snapshot) -> f64 {
+/// How long a track has delivered nothing but digital silence.
+fn silencio_de(snapshot: &Snapshot, trilha: &str) -> f64 {
     snapshot
         .gravacao
         .as_ref()
-        .and_then(|g| g.pointer("/niveis/mic/silencio_ha_s"))
+        .and_then(|g| g.pointer(&format!("/niveis/{trilha}/silencio_ha_s")))
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0)
+}
+
+/// What a track records from right now, by name.
+fn dispositivo_de(snapshot: &Snapshot, trilha: &str) -> Option<String> {
+    snapshot
+        .gravacao
+        .as_ref()
+        .and_then(|g| g.pointer(&format!("/dispositivos/{trilha}")))
+        .and_then(|v| v.as_str())
+        .filter(|nome| !nome.is_empty())
+        .map(str::to_string)
+}
+
+/// Conditional on purpose: the others being quiet is silence too.
+fn silencio_do_sistema(saida: Option<&str>) -> String {
+    let gravando = saida.map(|nome| format!(", gravando \u{201c}{nome}\u{201d}")).unwrap_or_default();
+    format!(
+        "O áudio do sistema está em silêncio há 2 minutos{gravando}. Se os outros \
+         participantes estão falando, o som deles está saindo por outra saída."
+    )
 }
 
 fn deteccao_de(snapshot: &Snapshot) -> Option<String> {
@@ -744,6 +791,46 @@ mod testes {
         // The signal came back, then went away again for a minute.
         assert!(o.observar(&snapshot(gravando("g1", &[], 0.0), None)).is_empty());
         assert_eq!(chaves(&o.observar(&snapshot(gravando("g1", &[], 61.0), None))), ["silencio:g1:2"]);
+    }
+
+    fn gravando_com_sistema(uid: &str, silencio: f64, saida: &str) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "ativa": true, "pausada": false, "uid": uid, "titulo": "Diária",
+            "duracao_ms": 300_000, "avisos": [],
+            "niveis": {
+                "mic": {"pico": 0.3, "silencio_ha_s": 0.0},
+                "system": {"pico": 0.0, "silencio_ha_s": silencio},
+            },
+            "dispositivos": {"mic": "Microfone (JBL)", "system": saida},
+        }))
+    }
+
+    #[test]
+    fn silencio_do_sistema_nomeia_a_saida_uma_vez_por_episodio() {
+        let saida = "Fones de ouvido (JBL Tune Flex 2)";
+        let mut o = Observador::default();
+        o.observar(&ocioso());
+        o.observar(&snapshot(gravando_com_sistema("g1", 0.0, saida), None));
+        assert!(o.observar(&snapshot(gravando_com_sistema("g1", 119.0, saida), None)).is_empty());
+        let avisos = o.observar(&snapshot(gravando_com_sistema("g1", 120.0, saida), None));
+        assert_eq!(chaves(&avisos), ["silencio-sistema:g1:1"]);
+        assert!(avisos[0].texto.contains("Fones de ouvido (JBL Tune Flex 2)"), "{}", avisos[0].texto);
+        assert!(avisos[0].texto.contains("Se os outros"));
+        assert!(o.observar(&snapshot(gravando_com_sistema("g1", 600.0, saida), None)).is_empty());
+        // The others spoke, then went silent for two minutes again.
+        assert!(o.observar(&snapshot(gravando_com_sistema("g1", 0.0, saida), None)).is_empty());
+        assert_eq!(
+            chaves(&o.observar(&snapshot(gravando_com_sistema("g1", 121.0, saida), None))),
+            ["silencio-sistema:g1:2"]
+        );
+    }
+
+    #[test]
+    fn um_minuto_calado_do_outro_lado_nao_e_aviso() {
+        let mut o = Observador::default();
+        o.observar(&ocioso());
+        o.observar(&snapshot(gravando_com_sistema("g1", 0.0, "Alto-falantes"), None));
+        assert!(o.observar(&snapshot(gravando_com_sistema("g1", 60.0, "Alto-falantes"), None)).is_empty());
     }
 
     #[test]

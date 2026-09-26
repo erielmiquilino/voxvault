@@ -97,6 +97,9 @@ class RecordingView:
     #: microphone is picking something up. Reading resets it, which caps the
     #: update rate at whatever the caller polls at.
     niveis: dict = field(default_factory=dict)
+    #: What each track records from right now, by name: a warning about a
+    #: silent track has to say which device it is listening to.
+    dispositivos: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -110,6 +113,7 @@ class RecordingView:
             "trilhas": self.trilhas,
             "avisos": self.avisos,
             "niveis": self.niveis,
+            "dispositivos": self.dispositivos,
         }
 
 
@@ -214,6 +218,7 @@ class ResidentService:
                 "instante": datetime.now(UTC).isoformat(),
             })
             del self._events[:-EVENTS_KEPT]
+        log_line(kind, detail, uid=uid)
 
     def _title_of(self, uid: str) -> str:
         if not uid:
@@ -669,6 +674,10 @@ class ResidentService:
                 trilhas={t: s["duracao_ms"] for t, s in session.track_stats().items()},
                 avisos=session.warnings,
                 niveis=session.levels(),
+                dispositivos=(
+                    session.supervisor.device_names()
+                    if session.supervisor is not None else {}
+                ),
             ).to_dict()
 
     def start_recording(self, title: str = "") -> dict:
@@ -709,6 +718,7 @@ class ResidentService:
             FLOW_RENDER,
             resolve_endpoint,
             role_from_config,
+            system_track_endpoint,
         )
         from ..capture.stream import CaptureStream
         from ..config import POLICY_PINNED
@@ -721,28 +731,42 @@ class ResidentService:
         streams: dict[str, object] = {}
         watches: list[TrackWatch] = []
         problems: list[str] = []
+        microphone_id = ""
         for track, flow, policy, pinned in (
             ("mic", FLOW_CAPTURE, self.config.mic_policy, self.config.mic_device_id),
             ("system", FLOW_RENDER, self.config.system_policy, self.config.system_device_id),
         ):
             try:
-                endpoint = resolve_endpoint(
-                    flow=flow,
-                    policy_pinned_id=pinned if policy == POLICY_PINNED else "",
-                    role=role,
-                )
+                if flow == FLOW_RENDER and policy != POLICY_PINNED:
+                    # A call on a headset plays through the headset's own
+                    # hands-free output, which need not be the default of any
+                    # role: found on a real Teams call, recorded silent.
+                    endpoint = system_track_endpoint(
+                        role=role, microphone_id=microphone_id
+                    )
+                else:
+                    endpoint = resolve_endpoint(
+                        flow=flow,
+                        policy_pinned_id=pinned if policy == POLICY_PINNED else "",
+                        role=role,
+                    )
+                if flow == FLOW_CAPTURE:
+                    microphone_id = endpoint.id
                 streams[track] = CaptureStream(
                     endpoint.id, loopback=(flow == FLOW_RENDER), name=track
                 )
                 watches.append(TrackWatch(
                     track=track, flow=flow, policy=policy, pinned_id=pinned,
                     role=role, endpoint_id=endpoint.id, endpoint_name=endpoint.name,
+                    on_call_output=flow == FLOW_RENDER
+                    and bool(getattr(endpoint, "is_call_endpoint", False)),
                 ))
             except Exception as exc:
                 problems.append(f"{track}: {exc}")
 
         if not streams:
             self.pipeline.resume_after_recording()
+            log_line("falha", "inicio: nenhuma trilha pode ser aberta; " + "; ".join(problems))
             raise ServiceBusy(
                 "Nenhuma trilha pode ser aberta. " + "; ".join(problems)
             )
@@ -751,6 +775,10 @@ class ResidentService:
             self.config, title=title,
             mic_stream=streams.get("mic"), system_stream=streams.get("system"),
         )
+        # Every warning of the session -- a device lost, recovered, moved --
+        # reaches the log the moment it happens, with the time it happened.
+        meeting = getattr(session, "uid", "")
+        session.on_warning = lambda message: log_line("trilha", message, uid=meeting)
         try:
             session.start()
         except Exception as exc:
@@ -759,8 +787,13 @@ class ResidentService:
             # caller only learns that nothing opened, which is the least
             # useful half of the story.
             detail = "; ".join(session.warnings + problems)
+            from ..capture.refusal import explain
+
+            blocked = explain(detail)
+            log_line("falha", f"inicio: {exc} {detail} {blocked or ''}")
             raise ServiceBusy(
                 f"{exc}{(' Motivos: ' + detail) if detail else ''}"
+                f"{(' ' + blocked) if blocked else ''}"
             ) from exc
 
         # Only the tracks that actually opened are watched: a track that never
@@ -782,6 +815,37 @@ class ResidentService:
         payload["liberacao_de_inferencia_ms"] = round(released * 1000, 1)
         payload["avisos"] = payload.get("avisos", []) + problems
         return payload
+
+    def _finalize_from_disk(self, session, failure: BaseException):
+        """Finalize a session whose own stop failed, from what is on disk."""
+        from ..layout import available_tracks
+        from ..session import SessionReport
+        from ..session.finalize import finalize_session, now_iso
+
+        on_disk = available_tracks(session.directory)
+        duration = _longest_ms(list(on_disk.values()))
+        warning = (
+            f"o encerramento falhou ({failure}); a reuniao foi fechada com o "
+            f"audio em disco"
+        )
+        try:
+            finalize_session(
+                session.directory,
+                tracks=list(on_disk) or ["mic", "system"],
+                duration_ms=duration,
+                ended_at=now_iso(),
+                submit=lambda: self._enqueue_quietly(session.uid),
+            )
+        except Exception as exc:
+            # The next start finalizes it: a finalization is resumable.
+            log_failure("a finalizacao pelo disco tambem falhou", exc, uid=session.uid)
+        return SessionReport(
+            uid=session.uid,
+            directory=session.directory,
+            duration_ms=duration,
+            start_latency_ms=0.0,
+            warnings=[*getattr(session, "_warnings", []), warning],
+        )
 
     def pause_recording(self) -> dict:
         with self._lock:
@@ -805,7 +869,14 @@ class ResidentService:
         if session is None:
             raise ServiceBusy("Nao ha gravacao em andamento para encerrar.")
 
-        report = session.stop(submit=lambda: self._enqueue_quietly(session.uid))
+        try:
+            report = session.stop(submit=lambda: self._enqueue_quietly(session.uid))
+        except Exception as exc:
+            # The session is already off the service, so a stop that raised
+            # here used to leave the meeting "recording" for good. What is on
+            # disk is finalized the way an interrupted session is.
+            log_failure("o encerramento da gravacao falhou", exc, uid=session.uid)
+            report = self._finalize_from_disk(session, exc)
 
         from ..types import MeetingState
 
@@ -829,6 +900,49 @@ class ResidentService:
             "avisos": report.warnings,
             "diretorio": str(report.directory),
         }
+
+
+def log_line(kind: str, detail: str = "", *, uid: str = "") -> None:
+    """One line of the service's log: when, what, and which meeting.
+
+    The service's standard output is the log file the app opened for it, so
+    a line on it is the whole mechanism. A meeting is named by its identifier
+    and never by its title: a log is what gets pasted into a bug report. A
+    line that cannot be written is dropped -- a log must never break the
+    service it describes.
+    """
+    stream = sys.stdout
+    if stream is None:
+        return
+    when = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    text = " ".join(str(detail).split())
+    line = f"{when} [{kind}] {uid[:8] if uid else '-'} {text}".rstrip()
+    try:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        stream.write(line.encode(encoding, "replace").decode(encoding, "replace") + "\n")
+        stream.flush()
+    except Exception:
+        pass
+
+
+def log_failure(what: str, failure: BaseException, *, uid: str = "") -> None:
+    """A failure in the log, with the stack that says where it came from."""
+    import traceback
+
+    log_line("falha", f"{what}: {failure}", uid=uid)
+    stream = sys.stdout
+    if stream is None:
+        return
+    try:
+        stack = "".join(traceback.format_exception(failure)).rstrip()
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        for line in stack.splitlines():
+            stream.write(
+                "    " + line.encode(encoding, "replace").decode(encoding, "replace") + "\n"
+            )
+        stream.flush()
+    except Exception:
+        pass
 
 
 def _existing_dir(directory: str):
@@ -983,6 +1097,7 @@ def _shutdown_if_idle(service: ResidentService) -> dict:
     blocked, reason = service.has_work()
     if blocked:
         raise ServiceBusy(f"O servico nao pode ser encerrado agora: {reason}.")
+    service._record_event("encerrando", "a pedido de um cliente")
     service.stop()
     return {"encerrando": True}
 
@@ -994,5 +1109,7 @@ __all__ = [
     "ResidentService",
     "ServiceBusy",
     "exclusivity",
+    "log_failure",
+    "log_line",
     "rendezvous",
 ]

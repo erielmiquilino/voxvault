@@ -260,10 +260,15 @@ def _check_capture() -> DiagnosticItem:
     # of the day be the thing that discovers otherwise.
     usable, refusal = _probe_open(inputs[0])
     if not usable:
+        from .capture.refusal import explain
+
+        # A capture refused to this program while playback opens is not a
+        # broken audio service, and restarting one does nothing for it.
+        blocked = explain(refusal)
         return DiagnosticItem(
             "captura", "Captura de audio", "falha",
             f"{detail}, mas abrir '{inputs[0].name}' falhou: {refusal}",
-            remedy=(
+            remedy=blocked or (
                 "Os dispositivos aparecem mas nao abrem. Reinicie o servico de "
                 "audio do Windows, ou a sessao, e rode o diagnostico de novo."
             ),

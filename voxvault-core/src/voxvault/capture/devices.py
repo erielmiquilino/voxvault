@@ -65,6 +65,12 @@ _STATE_NAMES: Final[dict[int, str]] = {
 #: participants and the same speech appears on both tracks.
 _HEADPHONE_FORM_FACTORS: Final = frozenset({3, 5, 6})  # Headphones, Headset, Handset
 
+#: Form factors of the endpoints a call goes through. A Bluetooth headset
+#: shows up as a stereo output ("Headphones") and a hands-free pair -- output
+#: and microphone -- that are "Headset"; a call app opens the hands-free
+#: microphone and plays the call through the hands-free output.
+_CALL_FORM_FACTORS: Final = frozenset({5, 6})  # Headset, Handset
+
 
 def role_from_config(value: str) -> str:
     """Map a ``config.device_role`` value onto a Windows role."""
@@ -86,6 +92,8 @@ class AudioEndpoint:
     flow: str
     state: int
     form_factor: int
+    #: The physical device, shared by all of its endpoints; empty if unknown.
+    container_id: str = ""
     default_for: frozenset[str] = field(default_factory=frozenset)
 
     @property
@@ -99,6 +107,11 @@ class AudioEndpoint:
     @property
     def looks_like_headphones(self) -> bool:
         return self.form_factor in _HEADPHONE_FORM_FACTORS
+
+    @property
+    def is_call_endpoint(self) -> bool:
+        """A headset's hands-free endpoint, or a handset's."""
+        return self.form_factor in _CALL_FORM_FACTORS
 
     @property
     def is_active(self) -> bool:
@@ -123,6 +136,7 @@ def _read_endpoint(device: wasapi.IMMDevice, flow: str) -> AudioEndpoint:
                 wasapi.PKEY_DeviceInterface_FriendlyName, "(sem nome)"
             )
         form_factor = store.get_uint(wasapi.PKEY_AudioEndpoint_FormFactor, 10)
+        container_id = store.get_guid(wasapi.PKEY_Device_ContainerId)
     finally:
         store.release()
     return AudioEndpoint(
@@ -131,6 +145,7 @@ def _read_endpoint(device: wasapi.IMMDevice, flow: str) -> AudioEndpoint:
         flow=flow,
         state=state,
         form_factor=form_factor,
+        container_id=container_id,
     )
 
 
@@ -189,6 +204,7 @@ def list_endpoints(
                             flow=endpoint.flow,
                             state=endpoint.state,
                             form_factor=endpoint.form_factor,
+                            container_id=endpoint.container_id,
                             default_for=roles,
                         )
                     )
@@ -221,6 +237,7 @@ def default_endpoint(flow: str, role: str = ROLE_COMMUNICATIONS) -> AudioEndpoin
             flow=endpoint.flow,
             state=endpoint.state,
             form_factor=endpoint.form_factor,
+            container_id=endpoint.container_id,
             default_for=roles,
         )
     finally:
@@ -280,6 +297,45 @@ def resolve_endpoint(
             f"Nao existe dispositivo padrao de {flow} para o papel '{role}'."
         )
     return endpoint
+
+
+def pick_call_output(
+    microphone: AudioEndpoint, outputs: Iterable[AudioEndpoint]
+) -> AudioEndpoint | None:
+    """The output a call through this microphone plays on, if it is a headset's.
+
+    A call app that opens a headset's hands-free microphone plays the call
+    through the same headset's hands-free output -- which need not be the
+    default of any role: with a Bluetooth headset the communications default
+    is often its stereo output, silent for the whole call. Matched by the
+    physical device and the form factor, never by the name, which changes
+    with the language and the maker.
+    """
+    if not microphone.is_call_endpoint or not microphone.container_id:
+        return None
+    for output in outputs:
+        if (
+            output.is_active
+            and output.is_call_endpoint
+            and output.container_id == microphone.container_id
+        ):
+            return output
+    return None
+
+
+def system_track_endpoint(*, role: str, microphone_id: str = "") -> AudioEndpoint:
+    """Where the system track records while it follows the default.
+
+    The call output of the headset whose microphone is being recorded, while
+    that output is active; otherwise the default output for the role.
+    """
+    if microphone_id:
+        microphone = endpoint_by_id(microphone_id)
+        if microphone is not None:
+            call = pick_call_output(microphone, list_endpoints(FLOW_RENDER))
+            if call is not None:
+                return call
+    return resolve_endpoint(flow=FLOW_RENDER, role=role)
 
 
 def format_endpoints(endpoints: Iterable[AudioEndpoint]) -> str:

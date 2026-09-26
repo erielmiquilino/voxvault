@@ -88,9 +88,17 @@ class RecordingSession:
         self._mic_stream = mic_stream
         self._system_stream = system_stream
         self._streams: dict[str, object] = {}
+        #: A device the supervisor opened for a track, waiting for that track's
+        #: writing thread to take it over. See :meth:`replace_stream`.
+        self._pending: dict[str, object] = {}
         self._writers: dict[str, TrackWriter] = {}
         self.supervisor = None
         self._pumps: list[threading.Thread] = []
+        self._pump_for: dict[str, threading.Thread] = {}
+        #: Told of every warning as it happens -- the service's log. The list
+        #: below is what the metadata keeps.
+        self.on_warning = None
+        self._last_read_error: dict[str, str] = {}
         self._halt = threading.Event()
         self._paused = threading.Event()
         self._pauses: list[PauseInterval] = []
@@ -129,7 +137,7 @@ class RecordingSession:
             except Exception as exc:
                 # One track failing must not cancel the recording: half a
                 # meeting is far better than none.
-                self._warnings.append(f"trilha '{track}' nao pode ser aberta: {exc}")
+                self._warn(f"trilha '{track}' nao pode ser aberta: {exc}")
 
         if not opened:
             raise CaptureError(
@@ -171,9 +179,20 @@ class RecordingSession:
             )
             pump.start()
             self._pumps.append(pump)
+            self._pump_for[track] = pump
 
         self._start_latency_ms = (time.perf_counter() - began) * 1000
         return self._start_latency_ms
+
+    def _warn(self, message: str) -> None:
+        """Keep a warning for the metadata and tell the service as it happens."""
+        self._warnings.append(message)
+        callback = self.on_warning
+        if callback is not None:
+            try:
+                callback(message)
+            except Exception:
+                pass
 
     def _pump(self, track: str, stream) -> None:
         """Drain one stream into its writer until the session stops.
@@ -181,45 +200,130 @@ class RecordingSession:
         The stream is looked up each turn rather than captured once: the
         device supervisor can swap it underneath, and a pump holding the old
         object would keep draining a device nobody is recording from.
+
+        Nothing short of a disk that refuses the writes ends this loop. It
+        used to end on the first packet that failed, and a track then stopped
+        being written for the rest of the meeting while its device kept
+        capturing -- with nothing on screen to say so.
         """
         writer = self._writers[track]
         while not self._halt.is_set():
+            self._take_over_pending(track, writer)
             stream = self._streams.get(track)
             if stream is None:
                 return  # the track was ended; the recording carries on
             try:
                 packets = stream.read()
             except Exception as exc:
-                self._warnings.append(f"trilha '{track}' parou de entregar: {exc}")
+                # A device that is gone keeps raising until the supervisor
+                # replaces it: said once per kind of failure, not 20 times a
+                # second for as long as it lasts.
+                text = str(exc)
+                if self._last_read_error.get(track) != text:
+                    self._last_read_error[track] = text
+                    self._warn(f"trilha '{track}' parou de entregar: {exc}")
                 self._halt.wait(PUMP_INTERVAL_S)
                 continue
+            self._last_read_error.pop(track, None)
             if packets:
-                for packet in packets:
-                    try:
-                        writer.write_packet(packet)
-                    except Exception as exc:
-                        self._warnings.append(f"falha ao escrever '{track}': {exc}")
-                        return
+                if not self._write(track, writer, packets):
+                    return
             else:
                 writer.maybe_flush()
             self._halt.wait(PUMP_INTERVAL_S)
 
+    def _write(self, track: str, writer: TrackWriter, packets) -> bool:
+        """Write packets; False only when the disk refuses them."""
+        unwritten_before = writer.stats.unwritten_blocks
+        for packet in packets:
+            try:
+                writer.write_packet(packet)
+            except OSError as exc:
+                self._warn(f"falha ao escrever '{track}': {exc}")
+                return False
+            except Exception as exc:
+                # The packet could not even be placed on the timeline. The
+                # next one fills the hole with silence, as for any gap.
+                writer.count_unwritten(getattr(packet, "frames", 0), str(exc))
+        if unwritten_before == 0 and writer.stats.unwritten_blocks > 0:
+            self._warn(
+                f"trilha '{track}': bloco nao escrito ({writer.stats.unwritten_reason}); "
+                f"a trilha continua"
+            )
+        return True
+
+    def _take_over_pending(self, track: str, writer: TrackWriter) -> None:
+        """Move a track to the device the supervisor opened for it.
+
+        Here, on the writing thread, and in order: what the old device still
+        held is written in the old device's format, and only then is the
+        writer moved to the new one. Moved from the supervisor's thread, the
+        writer could change format while this thread was still writing the
+        old device's packets, and read them in a format they were not in.
+        """
+        with self._lock:
+            new = self._pending.pop(track, None)
+        if new is None:
+            return
+        old = self._streams.get(track)
+        if old is not None:
+            try:
+                leftovers = old.read()
+            except Exception:
+                leftovers = []
+            if leftovers:
+                self._write(track, writer, leftovers)
+        try:
+            writer.rebind(new.format)
+        except Exception as exc:
+            # The new device is not taken; the old one, gone, stays in place
+            # and the supervisor finds it lost again on its next check.
+            self._warn(f"trilha '{track}': o novo dispositivo nao pode ser assumido ({exc})")
+            try:
+                new.stop()
+            except Exception:
+                pass
+            return
+        with self._lock:
+            self._streams[track] = new
+        self._last_read_error.pop(track, None)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+
     # -- devices -------------------------------------------------------
 
     def stream_for(self, track: str):
-        return self._streams.get(track)
+        with self._lock:
+            return self._pending.get(track) or self._streams.get(track)
 
     def writer_for(self, track: str) -> TrackWriter | None:
         return self._writers.get(track)
 
     def replace_stream(self, track: str, stream) -> None:
-        """Swap a track's device without touching its file or its timeline."""
-        with self._lock:
-            previous = self._streams.get(track)
-            self._streams[track] = stream
-        if previous is not None:
+        """Hand a track a new device, without touching its file or timeline.
+
+        The track's writing thread takes it over on its next turn -- see
+        :meth:`_take_over_pending`. A track nobody writes any more cannot take
+        a device: that one is closed at once instead of capturing into a
+        buffer nobody drains.
+        """
+        pump = self._pump_for.get(track)
+        if pump is None or not pump.is_alive():
             try:
-                previous.stop()
+                stream.stop()
+            except Exception:
+                pass
+            self._warn(f"trilha '{track}' nao esta sendo escrita; o novo dispositivo foi fechado")
+            return
+        with self._lock:
+            superseded = self._pending.get(track)
+            self._pending[track] = stream
+        if superseded is not None:
+            try:
+                superseded.stop()
             except Exception:
                 pass
 
@@ -314,7 +418,7 @@ class RecordingSession:
             # every second is a new warning every second to anything that
             # de-duplicates by text -- and a person stops reading those.
             self._drift_warned = True
-            self._warnings.append(
+            self._warn(
                 f"as trilhas passaram a divergir {drift} ms, acima do limite de "
                 f"{self.config.drift_warn_ms} ms"
             )
@@ -346,6 +450,15 @@ class RecordingSession:
                 "pacotes_com_posicao_derivada": writer.stats.derived_packets,
                 "reancoragens": writer.stats.reanchors,
                 "flushes": writer.stats.flushes,
+                **(
+                    {
+                        "blocos_nao_escritos": writer.stats.unwritten_blocks,
+                        "nao_escrito_ms": round(writer.stats.unwritten_ms, 1),
+                        "blocos_nao_escritos_em": list(writer.stats.unwritten_at),
+                    }
+                    if writer.stats.unwritten_blocks
+                    else {}
+                ),
             }
             for track, writer in self._writers.items()
         }
@@ -374,7 +487,10 @@ class RecordingSession:
         if self.supervisor is not None:
             self.supervisor.stop()
 
-        for stream in list(self._streams.values()):
+        with self._lock:
+            handed_over = list(self._pending.values())
+            self._pending.clear()
+        for stream in list(self._streams.values()) + handed_over:
             try:
                 stream.stop()
             except Exception:
@@ -416,50 +532,56 @@ class RecordingSession:
     # -- stopping ------------------------------------------------------
 
     def stop(self, *, submit=None, compress: bool = True) -> SessionReport:
-        """Close the streams, finalize the directory, and report."""
+        """Close the streams, finalize the directory, and report.
+
+        Every step before the metadata stands on its own: one that fails is a
+        warning, and the metadata and the finalization still happen. A stop
+        that raised halfway once left a real meeting marked "recording" for
+        good, its files never closed.
+        """
         if self._finished:
             return self._report()
 
         if self._paused.is_set():
-            self.resume()
+            self._step("retomar da pausa", self.resume)
 
         if self.supervisor is not None:
-            self.supervisor.stop()
+            self._step("parar a supervisao de dispositivos", self.supervisor.stop)
 
         self._halt.set()
         for pump in self._pumps:
             pump.join(timeout=3.0)
 
-        for stream in list(self._streams.values()):
-            try:
-                stream.stop()
-            except Exception:
-                pass
+        # Drain whatever the streams still held -- the device in use and one
+        # handed over that the writing thread never got to take -- including
+        # packets a stream kept back while measuring its position scale.
+        for track, writer in self._writers.items():
+            with self._lock:
+                current = self._streams.get(track)
+                pending = self._pending.pop(track, None)
+            for stream, handed_over in ((current, False), (pending, True)):
+                if stream is None:
+                    continue
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                try:
+                    if handed_over:
+                        writer.rebind(stream.format)
+                    self._write(track, writer, stream.read())
+                except Exception as exc:
+                    self._warn(f"trilha '{track}': o fim do audio nao foi escrito ({exc})")
 
-        # Drain whatever the streams still held, including packets a stream
-        # kept back while measuring its position scale.
-        for track, stream in (
-            (Track.MIC.value, self._mic_stream),
-            (Track.SYSTEM.value, self._system_stream),
-        ):
-            writer = self._writers.get(track)
-            if stream is None or writer is None:
-                continue
-            try:
-                for packet in stream.read():
-                    writer.write_packet(packet)
-            except Exception:
-                pass
+        self._step("igualar a duracao das trilhas", self._pad_tracks_to_equal_length)
 
-        self._pad_tracks_to_equal_length()
+        duration = self._safely("medir a duracao", lambda: self.duration_ms, 0)
+        drift = self._safely("medir a divergencia", lambda: self.drift_ms, 0)
+        stats = self._safely("reunir as estatisticas", self.track_stats, {})
+        warnings = self._safely("reunir os avisos", lambda: self.warnings, list(self._warnings))
 
-        duration = self.duration_ms
-        drift = self.drift_ms
-        stats = self.track_stats()
-        warnings = self.warnings
-
-        for writer in self._writers.values():
-            writer.close()
+        for track, writer in self._writers.items():
+            self._step(f"fechar a trilha '{track}'", writer.close)
         self._finished = True
 
         metadata = read_metadata(self.directory) or Metadata(uid=self.uid)
@@ -468,7 +590,7 @@ class RecordingSession:
         metadata.tracks = stats
         metadata.pauses = [p.as_dict() for p in self._pauses]
         metadata.warnings = warnings
-        metadata.alignment = {
+        metadata.alignment = self._safely("reunir o alinhamento", lambda: {
             # The worst the tracks got, not where they happened to end: a
             # recording can drift and recover, and the peak is what says
             # whether its timeline can be trusted.
@@ -481,13 +603,17 @@ class RecordingSession:
             },
             "limite_aviso_ms": self.config.drift_warn_ms,
             "atraso_de_inicio_ms": round(self._start_latency_ms, 1),
-        }
+        }, {})
         if self.supervisor is not None:
             # A device change is a real gap in what was heard, so it belongs in
             # the metadata with its instant and its length -- not only in a
             # warning somebody may never read.
-            metadata.alignment["lacunas_por_dispositivo"] = self.supervisor.gaps()
-            metadata.alignment["saude_das_trilhas"] = self.supervisor.health()
+            metadata.alignment["lacunas_por_dispositivo"] = self._safely(
+                "reunir as lacunas", self.supervisor.gaps, []
+            )
+            metadata.alignment["saude_das_trilhas"] = self._safely(
+                "reunir a saude das trilhas", self.supervisor.health, {}
+            )
         write_metadata(self.directory, metadata)
 
         finalize_session(
@@ -501,6 +627,20 @@ class RecordingSession:
         self._duration_at_stop = duration
         self._drift_at_stop = drift
         return self._report()
+
+    def _step(self, what: str, action) -> None:
+        """Run one step of the stop; a failure is a warning, not the end."""
+        try:
+            action()
+        except Exception as exc:
+            self._warn(f"encerramento: nao foi possivel {what} ({exc})")
+
+    def _safely(self, what: str, compute, fallback):
+        try:
+            return compute()
+        except Exception as exc:
+            self._warn(f"encerramento: nao foi possivel {what} ({exc})")
+            return fallback
 
     def _pad_tracks_to_equal_length(self) -> None:
         """Bring every track up to the longest one, with silence.
@@ -529,7 +669,7 @@ class RecordingSession:
                 missing * writer.source_format.sample_rate / 1000
             )
             if not had_audio:
-                self._warnings.append(
+                self._warn(
                     f"a trilha '{track}' nao recebeu audio algum e foi "
                     f"preenchida com {missing / 1000:.1f}s de silencio para "
                     f"manter o alinhamento com a outra trilha"

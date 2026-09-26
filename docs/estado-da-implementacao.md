@@ -814,6 +814,65 @@ carregando 10 ms cada — o enlace acordando, ~150 ms no total, abaixo do
 limiar. Ele agora mede o fluxo já estabilizado e exige que a partida fique
 abaixo do limiar, que é o que garante que ela nunca vire silêncio inventado.
 
+## As duas gravações de 25/09 sem o áudio do sistema
+
+Uma reunião no Teams, com o headset Bluetooth, saiu em duas gravações só com a
+voz do usuário. O registro do Windows contou o que aconteceu: o headset aparece
+como três dispositivos com o mesmo identificador de aparelho — a saída estéreo
+("Fones de ouvido", forma de fone), a saída Hands-Free e o microfone Hands-Free
+(forma de headset). O Teams abriu o microfone Hands-Free e tocou a chamada na
+saída Hands-Free; a trilha do sistema gravava o padrão de comunicações, que era
+a saída estéreo, e ela ficou em silêncio digital os 16 minutos inteiros. Na
+segunda gravação o fone caiu, o Teams passou a tocar em outra saída e a trilha
+do sistema, indo atrás do padrão, captou a reunião por três minutos; com o
+Bluetooth reiniciado e o fone de volta, as duas trilhas perderam o dispositivo,
+não se recuperaram nos 30 s do prazo e foram encerradas. A gravação seguiu
+aberta sem captar nada, o encerramento falhou no meio e ela ficou "gravando"; o
+serviço, ocioso, saiu cinco minutos depois. Nada disso estava em lugar nenhum:
+os avisos da sessão viviam só na memória do serviço.
+
+Ler o código mostrou mais três fragilidades. A tentativa de reabrir uma trilha
+rodava na thread do supervisor com a guarda de 120 s da abertura, e uma
+abertura travada deixava a outra trilha sem vigilância. A thread que escreve
+cada trilha terminava na primeira exceção, e o supervisor mudava o formato do
+escritor antes de trocar o stream, então um pacote do dispositivo anterior podia
+ser lido no formato do novo — e a trilha parava de ser escrita com o dispositivo
+captando, sem nada na tela. E um passo que falhasse no encerramento derrubava
+os seguintes.
+
+A mudança `fix-real-call-capture` corrige tudo isso:
+
+- **Saída de chamada:** quando o microfone gravado é de um headset, a trilha do
+  sistema grava a saída de chamada do mesmo aparelho, reconhecida pelo
+  identificador de aparelho e pela forma, nunca pelo nome; o supervisor a
+  reavalia a cada 2 s.
+- **Recuperação contínua:** esgotados 30 s, a trilha é marcada como incompleta e
+  o usuário é avisado, mas as tentativas continuam até o fim, cada uma na sua
+  thread.
+- **Troca de dispositivo na thread de escrita:** o dispositivo anterior é
+  escrito no formato dele e só então o escritor muda de formato; um pacote que
+  não pode ser convertido vira silêncio no seu lugar e é contado nos
+  metadados.
+- **Encerramento isolado por passo:** se ainda assim falhar, o serviço finaliza
+  pelo disco e fecha a reunião.
+- **Log:** cada evento e cada aviso vão para o `servico.log`, com data e hora e
+  sem título.
+- **Aviso de silêncio da trilha do sistema:** depois de 120 s, nomeando a saída
+  gravada.
+
+Tudo coberto por testes com dispositivos falsos, a partir do headset como o
+Windows o mostrou. A verificação com o aparelho de verdade fica para a próxima
+reunião do usuário.
+
+**A captura recusada no PC do trabalho.** Lá, toda captura — os dois
+microfones e o loopback — falhava no `Initialize` com `E_INVALIDARG`, qualquer
+que fosse o formato, o buffer ou as flags, enquanto a reprodução abria. O mesmo
+teste feito de dentro do PowerShell, um programa da Microsoft, captava tudo: o
+Kaspersky Endpoint Security da empresa recusa a captura a programas que não
+conhece. O diagnóstico mandava reiniciar o serviço de áudio; agora, quando a
+reprodução abre e a captura não, ele e o erro ao gravar apontam o software de
+segurança e nomeiam os executáveis que a TI precisa liberar.
+
 ## O que bloqueia o fechamento
 
 1. **Verificação ao vivo de perda e migração de dispositivo**, e de suspensão.
