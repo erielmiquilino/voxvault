@@ -55,6 +55,12 @@ export interface GravacaoView {
    *  silent. Reading resets the peak, so the update rate is this app's polling
    *  rate and the 20/s cap is respected by construction. */
   niveis: Record<string, { pico: number; silencio_ha_s: number }>;
+  /** What each track records from right now, by name. */
+  dispositivos?: Record<string, string>;
+  /** Each track's device as the service's supervisor sees it. The only
+   *  reliable word on a lost device: a system track stands still whenever
+   *  nothing plays, and only the supervisor tells that from a device gone. */
+  saude?: Record<string, "gravando" | "recuperando" | "sem_dispositivo">;
 }
 
 /** Whether a meeting looks like it has started, and on what evidence.

@@ -434,3 +434,19 @@ class DeviceSupervisor:
     def device_names(self) -> dict[str, str]:
         """What each track records from right now, by name."""
         return {track: w.endpoint_name for track, w in self.watches.items()}
+
+    def live_health(self) -> dict[str, str]:
+        """Each track's device right now, for a surface showing the recording.
+
+        Not :meth:`health`, which keeps "incompleta" for a track that came back
+        -- right for the metadata, wrong for a meter. And the only reliable
+        word on a lost device: a system track stands still whenever nothing
+        plays, and only the supervisor tells that from a device that is gone.
+        """
+        live: dict[str, str] = {}
+        for track, watch in self.watches.items():
+            if watch.health is TrackHealth.RECOVERING:
+                live[track] = "sem_dispositivo" if watch.incomplete else "recuperando"
+            else:
+                live[track] = str(watch.health)
+        return live

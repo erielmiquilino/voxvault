@@ -312,6 +312,32 @@ def test_a_hanging_open_does_not_hold_up_the_other_track(setup) -> None:
         supervisor.stop()
 
 
+def test_the_live_health_tells_a_lost_device_from_a_quiet_one(setup) -> None:
+    """What a meter shows: recovering, then past the budget -- while the
+    metadata keeps "incompleta" for a track that came back."""
+    session = FakeSession({"system": FakeStream("dev-1", broken=True)})
+    supervisor = DeviceSupervisor(session, recovery_budget_s=0.0, retry_interval_s=0.0)
+    supervisor.watch(_watch())
+    setup["open_fails"] = 1
+
+    supervisor.check()
+    assert supervisor.live_health() == {"system": "sem_dispositivo"}
+
+    supervisor.check()  # the device is back
+    assert supervisor.live_health() == {"system": "gravando"}
+    assert supervisor.health() == {"system": "incompleta"}
+
+
+def test_a_quiet_output_is_live_and_healthy(setup) -> None:
+    session = FakeSession({"system": FakeStream("dev-1")})
+    supervisor = DeviceSupervisor(session)
+    supervisor.watch(_watch())
+
+    supervisor.check()
+
+    assert supervisor.live_health() == {"system": "gravando"}
+
+
 # -- the call output of a headset -------------------------------------
 
 def test_the_system_track_moves_to_the_call_output_when_a_call_starts(setup) -> None:

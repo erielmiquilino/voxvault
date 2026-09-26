@@ -100,6 +100,9 @@ class RecordingView:
     #: What each track records from right now, by name: a warning about a
     #: silent track has to say which device it is listening to.
     dispositivos: dict = field(default_factory=dict)
+    #: Each track's device as the supervisor sees it: "gravando",
+    #: "recuperando", or "sem_dispositivo" past the recovery budget.
+    saude: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -114,6 +117,7 @@ class RecordingView:
             "avisos": self.avisos,
             "niveis": self.niveis,
             "dispositivos": self.dispositivos,
+            "saude": self.saude,
         }
 
 
@@ -676,6 +680,10 @@ class ResidentService:
                 niveis=session.levels(),
                 dispositivos=(
                     session.supervisor.device_names()
+                    if session.supervisor is not None else {}
+                ),
+                saude=(
+                    session.supervisor.live_health()
                     if session.supervisor is not None else {}
                 ),
             ).to_dict()

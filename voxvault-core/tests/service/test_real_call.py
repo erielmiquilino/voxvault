@@ -155,10 +155,13 @@ def test_the_recording_view_names_what_each_track_records(service: ResidentServi
         duration_ms=1000, drift_ms=0, warnings=[],
         track_stats=lambda: {"mic": {"duracao_ms": 1000}},
         levels=lambda: {},
-        supervisor=SimpleNamespace(device_names=lambda: {
-            "mic": "Microfone (JBL Hands-Free)",
-            "system": "Alto-falantes (JBL Hands-Free)",
-        }),
+        supervisor=SimpleNamespace(
+            device_names=lambda: {
+                "mic": "Microfone (JBL Hands-Free)",
+                "system": "Alto-falantes (JBL Hands-Free)",
+            },
+            live_health=lambda: {"mic": "gravando", "system": "recuperando"},
+        ),
     )
     with service._lock:
         service._session = session
@@ -166,3 +169,4 @@ def test_the_recording_view_names_what_each_track_records(service: ResidentServi
     view = service.recording()
 
     assert view["dispositivos"]["system"] == "Alto-falantes (JBL Hands-Free)"
+    assert view["saude"] == {"mic": "gravando", "system": "recuperando"}

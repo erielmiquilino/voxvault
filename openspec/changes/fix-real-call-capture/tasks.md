@@ -14,6 +14,7 @@
 
 - [x] 3.1 Nome da saída gravada na visão da gravação e aviso de captura da trilha do sistema em silêncio digital por 120 s, uma vez por episódio; verificar com testes do serviço e dos avisos do app.
 - [x] 3.2 Captura recusada com reprodução funcionando: explicação e executáveis no diagnóstico e no erro de início; verificar com testes que simulam captura recusada e reprodução aberta, e o caso contrário, em que a mensagem continua a atual.
+- [ ] 3.3 Estado de cada trilha na tela pela saúde publicada pelo supervisor — gravando, recuperando, sem dispositivo —, e não pelo crescimento da trilha do sistema, com a saída gravada em tom neutro quando ela está em silêncio; verificar com testes da saúde publicada e, instalado, que uma gravação sem nada tocando não mostra a trilha do sistema como perdida.
 
 ## 4. Verificação
 

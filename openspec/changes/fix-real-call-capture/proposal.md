@@ -10,6 +10,7 @@ Numa reunião real no Teams, em 25/09, com um headset Bluetooth, as duas gravaç
 - O encerramento de uma gravação nunca deixa a reunião aberta. Se a finalização falhar, a reunião é fechada com o que está em disco e submetida para transcrição.
 - O serviço passa a registrar em disco, com data e hora, os eventos da gravação, as mudanças de dispositivo, os avisos e as falhas com a causa, num arquivo de tamanho limitado.
 - A trilha do sistema em silêncio digital por 120 segundos passa a gerar um aviso de captura, que nomeia a saída gravada.
+- A tela de gravação deixa de mostrar a trilha do sistema como perdida quando nada está tocando: o estado de cada trilha vem do supervisor, e a saída gravada aparece em tom neutro quando está em silêncio.
 - Quando a captura é recusada e a reprodução funciona, o diagnóstico e o erro de início passam a apontar um software de segurança bloqueando o VoxVault e a nomear o executável a liberar.
 
 ## Capabilities
@@ -24,6 +25,7 @@ Nenhuma.
 - `recording-session`: encerramento que sempre fecha a reunião; registro de eventos do serviço em disco.
 - `environment-check`: diagnóstico da captura recusada por software de segurança.
 - `tray-and-hotkeys`: aviso de captura para a trilha do sistema em silêncio digital.
+- `recording-ui`: estado de cada trilha pelo estado do dispositivo, e não pelo silêncio da trilha do sistema.
 
 ## Impact
 
@@ -34,5 +36,5 @@ Nenhuma.
   - `session/__init__.py`: troca de stream na thread de escrita, escrita que não morre, encerramento protegido.
   - `service/__init__.py`: início com a saída Hands-Free, encerramento que fecha a reunião, registro de eventos.
   - `doctor.py`: diagnóstico da captura recusada.
-- `voxvault-app`: `avisos.rs`, com o aviso de silêncio da trilha do sistema.
+- `voxvault-app`: `avisos.rs`, com o aviso de silêncio da trilha do sistema; `service.rs`, com a rotação do log; `Gravacao.svelte` e `Medidor.svelte`, com o estado de cada trilha.
 - Sem dependências novas.

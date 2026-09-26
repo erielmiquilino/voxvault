@@ -66,6 +66,8 @@ export interface Trilha {
    *  talking right now" from "this track has been recording silence for twenty
    *  minutes and nobody noticed". */
   silencioHaS: number;
+  /** What this track records from, by name, when the service says. */
+  dispositivo: string | null;
 }
 
 export const gravacao = $state<{
@@ -86,8 +88,8 @@ export const gravacao = $state<{
   decorridoMs: 0,
   niveisVivos: false,
   trilhas: {
-    mic: { capturando: false, nivel: 0, motivo: null, silencioHaS: 0 },
-    system: { capturando: false, nivel: 0, motivo: null, silencioHaS: 0 },
+    mic: { capturando: false, nivel: 0, motivo: null, silencioHaS: 0, dispositivo: null },
+    system: { capturando: false, nivel: 0, motivo: null, silencioHaS: 0, dispositivo: null },
   },
   avisos: [],
 });
@@ -192,6 +194,7 @@ export function zerarGravacao() {
     gravacao.trilhas[trilha].nivel = 0;
     gravacao.trilhas[trilha].motivo = null;
     gravacao.trilhas[trilha].silencioHaS = 0;
+    gravacao.trilhas[trilha].dispositivo = null;
   }
 }
 

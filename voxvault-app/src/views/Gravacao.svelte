@@ -159,25 +159,36 @@
         }
       }
 
-      // A track that stopped capturing stops accumulating milliseconds. That
-      // is the honest signal available: the service reports what each track
-      // has written, and a track whose figure froze while the other grew is
-      // the one that died.
+      // Whether a track is capturing is the supervisor's word when the service
+      // gives it: a device lost and being reopened. The growth of what a track
+      // wrote is only a fallback, and only for the microphone, which delivers
+      // continuously while it lives. The system track stands still whenever
+      // nothing plays -- read as "device lost", that painted the start of
+      // nearly every recording red.
       for (const trilha of ["mic", "system"] as const) {
         const escrito = vista.trilhas?.[trilha];
         const presente = escrito !== undefined;
         const anterior = duracoesAnteriores[trilha];
+        const saude = vista.saude?.[trilha];
         const parou =
+          trilha === "mic" &&
+          saude === undefined &&
           presente &&
           estado === "gravando" &&
           anterior !== undefined &&
           escrito === anterior;
-        gravacao.trilhas[trilha].capturando = presente && !parou;
-        gravacao.trilhas[trilha].motivo = parou
-          ? "Esta trilha parou de crescer: o dispositivo dela provavelmente foi perdido. A outra continua gravando."
-          : presente
-            ? null
-            : "Esta trilha não foi aberta nesta gravação.";
+        const perdida = saude === "recuperando" || saude === "sem_dispositivo";
+        gravacao.trilhas[trilha].capturando = presente && !parou && !perdida;
+        gravacao.trilhas[trilha].dispositivo = vista.dispositivos?.[trilha] || null;
+        gravacao.trilhas[trilha].motivo = !presente
+          ? "Esta trilha não foi aberta nesta gravação."
+          : saude === "sem_dispositivo"
+            ? "Sem dispositivo há mais de 30 s. A trilha volta sozinha quando um dispositivo aparecer; a outra continua gravando."
+            : saude === "recuperando"
+              ? "O dispositivo desta trilha foi perdido e está sendo reaberto. A outra continua gravando."
+              : parou
+                ? "Esta trilha parou de crescer: o dispositivo dela provavelmente foi perdido. A outra continua gravando."
+                : null;
         if (presente) duracoesAnteriores[trilha] = escrito;
       }
 
@@ -408,6 +419,7 @@
       <div class="grade-dupla">
         <Medidor
           rotulo="Microfone — a sua voz"
+          trilha="mic"
           nivel={gravacao.trilhas.mic.nivel}
           capturando={gravacao.trilhas.mic.capturando}
           motivo={gravacao.trilhas.mic.motivo}
@@ -417,11 +429,13 @@
         />
         <Medidor
           rotulo="Sistema — o que sai pela saída"
+          trilha="system"
           nivel={gravacao.trilhas.system.nivel}
           capturando={gravacao.trilhas.system.capturando}
           motivo={gravacao.trilhas.system.motivo}
           disponivel={gravacao.niveisVivos}
           silencioHaS={gravacao.trilhas.system.silencioHaS}
+          dispositivo={gravacao.trilhas.system.dispositivo}
           ativo={!ocioso}
         />
       </div>

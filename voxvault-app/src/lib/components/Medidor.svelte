@@ -7,14 +7,21 @@
   // main thread busy for an hour.
   let {
     rotulo,
+    trilha = "mic",
     nivel,
     capturando,
     motivo = null,
     disponivel = true,
     silencioHaS = 0,
+    dispositivo = null,
     ativo = true,
   }: {
     rotulo: string;
+    /** The microphone always delivers while it lives; the system track is
+     *  silent whenever nothing plays, which is not a failure. */
+    trilha?: "mic" | "system";
+    /** What this track records from, when the service says. */
+    dispositivo?: string | null;
     nivel: number;
     capturando: boolean;
     motivo?: string | null;
@@ -34,10 +41,17 @@
    *  has pauses; a minute without a single sample above the floor does not
    *  happen while somebody is talking into a working microphone. */
   const SILENCIO_SUSPEITO_S = 60;
+  /** For the system track, the same two minutes as its notification: nobody
+   *  else talking for a minute is ordinary. */
+  const SILENCIO_DO_SISTEMA_S = 120;
 
+  const sistema = $derived(trilha === "system");
   const mudo = $derived(disponivel && capturando && nivel < 0.005);
   const alto = $derived(disponivel && nivel > 0.92);
-  const suspeito = $derived(disponivel && capturando && silencioHaS >= SILENCIO_SUSPEITO_S);
+  const suspeito = $derived(
+    disponivel && capturando &&
+      silencioHaS >= (sistema ? SILENCIO_DO_SISTEMA_S : SILENCIO_SUSPEITO_S),
+  );
 
   function duracaoDoSilencio(s: number): string {
     if (s < 60) return `${Math.round(s)} s`;
@@ -84,6 +98,15 @@
     <p class="legenda" style="margin:5px 0 0">
       Nível indisponível: nada está publicando a medição desta trilha. A barra
       vazia aqui não significa microfone mudo.
+    </p>
+  {:else if suspeito && sistema}
+    <!-- Not an error: the others may simply be quiet. But a call playing on
+         another output looks exactly like this, and saying which output is
+         being recorded is what lets the person tell the two apart. -->
+    <p class="legenda" style="margin:5px 0 0">
+      Nada tocando{dispositivo ? ` em “${dispositivo}”` : " na saída gravada"} há
+      {duracaoDoSilencio(silencioHaS)}. Se os outros participantes estão falando,
+      o som deles está saindo por outra saída.
     </p>
   {:else if suspeito}
     <!-- The whole point of the meter: a track that has been silent for a long
