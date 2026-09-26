@@ -18,10 +18,10 @@
 ## 4. Verificação
 
 - [x] 4.1 Suítes completas: testes e análise estática do núcleo, testes e clippy do aplicativo, verificação de tipos da interface.
-- [ ] 4.2 Ensaio instalado nesta máquina: o serviço registra os eventos com data e hora no `servico.log`, e a gravação que ficou aberta em 25/09 é finalizada, fechada e transcrita pela recuperação.
+- [x] 4.2 Ensaio instalado nesta máquina: o serviço registra os eventos com data e hora no `servico.log`, e a gravação que ficou aberta em 25/09 é finalizada, fechada e transcrita pela recuperação.
 - [ ] 4.3 Reunião real no Teams com o headset Bluetooth, feita pelo usuário: a trilha do sistema tem a voz dos outros participantes, e uma queda do fone aparece no log com a volta da trilha.
 - [ ] 4.4 No PC do trabalho, feito pelo usuário: o diagnóstico com a captura recusada nomeia os executáveis a liberar.
 
 ## 5. Documentação
 
-- [ ] 5.1 `docs/estado-da-implementacao.md` com o que aconteceu em 25/09 e o que mudou, e o README onde descreve a escolha de dispositivos e o log; verificar que dizem o mesmo que as specs.
+- [x] 5.1 `docs/estado-da-implementacao.md` com o que aconteceu em 25/09 e o que mudou, e o README onde descreve a escolha de dispositivos e o log; verificar que dizem o mesmo que as specs.
